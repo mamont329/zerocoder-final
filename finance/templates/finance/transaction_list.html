@@ -1,0 +1,124 @@
+{% extends 'finance/base.html' %}
+
+{% block title %}Операции — FinControl{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h1 class="h3 mb-0">Операции</h1>
+    <span class="text-muted">{{ period_label }}</span>
+  </div>
+  <a href="{% url 'transaction_add' %}" class="btn btn-primary">Добавить</a>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end">
+      <div class="col-md-3">
+        <label class="form-label small text-muted">{{ filter_form.period.label }}</label>
+        {{ filter_form.period }}
+      </div>
+      <div class="col-md-2 js-custom-dates">
+        <label class="form-label small text-muted">{{ filter_form.date_from.label }}</label>
+        {{ filter_form.date_from }}
+      </div>
+      <div class="col-md-2 js-custom-dates">
+        <label class="form-label small text-muted">{{ filter_form.date_to.label }}</label>
+        {{ filter_form.date_to }}
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted">{{ filter_form.type.label }}</label>
+        {{ filter_form.type }}
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted">{{ filter_form.category.label }}</label>
+        {{ filter_form.category }}
+      </div>
+      <div class="col-md-1 d-grid">
+        <button type="submit" class="btn btn-outline-secondary">Найти</button>
+      </div>
+      {% if filter_form.non_field_errors %}
+        <div class="col-12"><div class="text-danger small">{{ filter_form.non_field_errors.0 }}</div></div>
+      {% endif %}
+    </form>
+  </div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-md-4">
+    <div class="card"><div class="card-body py-2">
+      <span class="text-muted small">Доходы</span>
+      <div class="fw-semibold amount-income">{{ totals.income|floatformat:2 }} ₽</div>
+    </div></div>
+  </div>
+  <div class="col-md-4">
+    <div class="card"><div class="card-body py-2">
+      <span class="text-muted small">Расходы</span>
+      <div class="fw-semibold amount-expense">{{ totals.expense|floatformat:2 }} ₽</div>
+    </div></div>
+  </div>
+  <div class="col-md-4">
+    <div class="card"><div class="card-body py-2">
+      <span class="text-muted small">Баланс</span>
+      <div class="fw-semibold {% if totals.balance < 0 %}amount-expense{% else %}amount-income{% endif %}">
+        {{ totals.balance|floatformat:2 }} ₽
+      </div>
+    </div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body">
+    {% if transactions %}
+      <div class="table-responsive">
+        <table class="table align-middle mb-0">
+          <thead>
+            <tr class="text-muted small text-uppercase">
+              <th>Дата</th><th>Категория</th><th>Описание</th>
+              <th class="text-end">Сумма</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in transactions %}
+              <tr>
+                <td class="text-muted">{{ t.date|date:"d.m.Y" }}</td>
+                <td>
+                  {{ t.category }}
+                  <span class="badge {% if t.type == 'income' %}text-bg-success{% else %}text-bg-secondary{% endif %} ms-1">
+                    {{ t.get_type_display }}
+                  </span>
+                </td>
+                <td class="text-muted">{{ t.description|default:"—" }}</td>
+                <td class="text-end fw-semibold {% if t.type == 'income' %}amount-income{% else %}amount-expense{% endif %}">
+                  {% if t.type == 'income' %}+{% else %}−{% endif %}{{ t.amount|floatformat:2 }} ₽
+                </td>
+                <td class="text-end text-nowrap">
+                  <a href="{% url 'transaction_edit' t.pk %}" class="btn btn-sm btn-outline-secondary">Изменить</a>
+                  <a href="{% url 'transaction_delete' t.pk %}" class="btn btn-sm btn-outline-danger">Удалить</a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {% if is_paginated %}{% include 'finance/_pagination.html' %}{% endif %}
+    {% else %}
+      <p class="text-muted mb-0">За выбранный период операций нет.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Поля произвольных дат нужны только для периода «Произвольный период»
+  (function () {
+    const period = document.getElementById('id_period');
+    const custom = document.querySelectorAll('.js-custom-dates');
+    const sync = () => custom.forEach(el => el.classList.toggle('d-none', period.value !== 'custom'));
+    period.addEventListener('change', sync);
+    sync();
+  })();
+</script>
+{% endblock %}
