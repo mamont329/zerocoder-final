@@ -8,19 +8,60 @@ from django.shortcuts import redirect
 from django.urls import reverse_lazy
 from django.views.generic import CreateView, DeleteView, ListView, TemplateView, UpdateView
 
-from . import periods
+from . import analytics, charts, periods
+from .analytics import totals
 from .forms import CategoryForm, SignUpForm, TransactionFilterForm, TransactionForm
 from .models import Category, OperationType, Transaction
 
 ZERO = Decimal('0.00')
 
+# Начиная с такой длины периода график по дням превращается в частокол —
+# переходим на помесячные значения
+MONTHLY_THRESHOLD_DAYS = 70
 
-def totals(queryset):
-    """Доходы, расходы и баланс по набору операций."""
-    by_type = {row['type']: row['total'] for row in queryset.values('type').annotate(total=Sum('amount'))}
-    income = by_type.get(OperationType.INCOME) or ZERO
-    expense = by_type.get(OperationType.EXPENSE) or ZERO
-    return {'income': income, 'expense': expense, 'balance': income - expense}
+
+def apply_filters(queryset, form):
+    """Сужает выборку по данным формы фильтра. Общее для списка и аналитики."""
+    if not form.is_valid():
+        return queryset
+
+    data = form.cleaned_data
+    start, end = form.range()
+    if start:
+        queryset = queryset.filter(date__gte=start)
+    if end:
+        queryset = queryset.filter(date__lte=end)
+    if data.get('type'):
+        queryset = queryset.filter(type=data['type'])
+    if data.get('category'):
+        queryset = queryset.filter(category=data['category'])
+    return queryset
+
+
+class FilteredTransactionsMixin(LoginRequiredMixin):
+    """Форма фильтра периода и подпись выбранного диапазона."""
+
+    def get_filter_form(self):
+        if not hasattr(self, '_filter_form'):
+            self._filter_form = TransactionFilterForm(self.request.GET or None, user=self.request.user)
+            self._filter_form.is_valid()
+        return self._filter_form
+
+    def get_period(self):
+        form = self.get_filter_form()
+        if form.is_valid():
+            return form.range()
+        return periods.period_range(periods.MONTH)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        form = self.get_filter_form()
+        context['filter_form'] = form
+        start, end = self.get_period()
+        context['period_label'] = periods.period_label(
+            form.cleaned_data.get('period') if form.is_valid() else periods.MONTH, start, end,
+        )
+        return context
 
 
 class SignUpView(CreateView):
@@ -97,7 +138,7 @@ class DashboardView(LoginRequiredMixin, TemplateView):
         return context
 
 
-class TransactionListView(OwnedQuerysetMixin, PaginationQueryMixin, ListView):
+class TransactionListView(OwnedQuerysetMixin, FilteredTransactionsMixin, PaginationQueryMixin, ListView):
     """История операций с фильтрами по периоду, типу и категории."""
 
     model = Transaction
@@ -105,38 +146,43 @@ class TransactionListView(OwnedQuerysetMixin, PaginationQueryMixin, ListView):
     context_object_name = 'transactions'
     paginate_by = 20
 
-    def get_filter_form(self):
-        if not hasattr(self, '_filter_form'):
-            self._filter_form = TransactionFilterForm(self.request.GET or None, user=self.request.user)
-            self._filter_form.is_valid()
-        return self._filter_form
-
     def get_queryset(self):
         queryset = super().get_queryset().select_related('category')
-        form = self.get_filter_form()
-        if not form.is_valid():
-            return queryset
-        data = form.cleaned_data
-
-        start, end = form.range()
-        if start:
-            queryset = queryset.filter(date__gte=start)
-        if end:
-            queryset = queryset.filter(date__lte=end)
-        if data.get('type'):
-            queryset = queryset.filter(type=data['type'])
-        if data.get('category'):
-            queryset = queryset.filter(category=data['category'])
-        return queryset
+        return apply_filters(queryset, self.get_filter_form())
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        form = self.get_filter_form()
-        context['filter_form'] = form
         context['totals'] = totals(self.get_queryset())
-        if form.is_valid():
-            start, end = form.range()
-            context['period_label'] = periods.period_label(form.cleaned_data['period'], start, end)
+        return context
+
+
+class AnalyticsView(FilteredTransactionsMixin, TemplateView):
+    """Аналитика: динамика по времени, структура расходов, лимиты и советы."""
+
+    template_name = 'finance/analytics.html'
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        user = self.request.user
+        start, end = self.get_period()
+        queryset = apply_filters(user.transactions.all(), self.get_filter_form())
+
+        # Длинный период рисуем по месяцам, короткий — по дням
+        span = (end - start).days if start and end else None
+        by_month = span is None or span >= MONTHLY_THRESHOLD_DAYS
+        frame = analytics.timeline(queryset, start, end, freq='ME' if by_month else 'D')
+
+        categories = analytics.expenses_by_category(queryset)
+        context.update({
+            'totals': totals(queryset),
+            'categories': categories,
+            'limits': analytics.limit_usage(user),
+            'advice': analytics.build_advice(user, queryset, start, end),
+            'timeline_chart': charts.timeline_chart(frame, by_month=by_month),
+            'cumulative_chart': charts.cumulative_chart(frame, by_month=by_month),
+            'category_chart': charts.category_chart(categories),
+            'operations_count': queryset.count(),
+        })
         return context
 
 
@@ -184,7 +230,13 @@ class CategoryListView(OwnedQuerysetMixin, PaginationQueryMixin, ListView):
     paginate_by = 10
 
     def get_queryset(self):
-        return super().get_queryset().annotate(total=Sum('transactions__amount'))
+        # Сортировку задаём явно: с annotate() умолчание из Meta теряется,
+        # а без порядка страницы пагинации могут дублировать строки
+        return (
+            super().get_queryset()
+            .annotate(total=Sum('transactions__amount'))
+            .order_by('type', 'name')
+        )
 
 
 class CategoryCreateView(LoginRequiredMixin, UserFormMixin, CreateView):

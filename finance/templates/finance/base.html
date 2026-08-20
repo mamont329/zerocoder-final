@@ -15,6 +15,7 @@
     .table > :not(caption) > * > * { padding: .7rem .75rem; }
     footer { color: #8a9099; font-size: .875rem; }
   </style>
+  {% block extra_head %}{% endblock %}
 </head>
 <body class="d-flex flex-column min-vh-100">
 
@@ -29,6 +30,7 @@
         <ul class="navbar-nav me-auto">
           <li class="nav-item"><a class="nav-link" href="{% url 'dashboard' %}">Сводка</a></li>
           <li class="nav-item"><a class="nav-link" href="{% url 'transaction_list' %}">Операции</a></li>
+          <li class="nav-item"><a class="nav-link" href="{% url 'analytics' %}">Аналитика</a></li>
           <li class="nav-item"><a class="nav-link" href="{% url 'category_list' %}">Категории</a></li>
         </ul>
         <div class="d-flex align-items-center gap-3">

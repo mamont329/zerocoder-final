@@ -11,38 +11,7 @@
   <a href="{% url 'transaction_add' %}" class="btn btn-primary">Добавить</a>
 </div>
 
-<div class="card mb-3">
-  <div class="card-body">
-    <form method="get" class="row g-2 align-items-end">
-      <div class="col-md-3">
-        <label class="form-label small text-muted">{{ filter_form.period.label }}</label>
-        {{ filter_form.period }}
-      </div>
-      <div class="col-md-2 js-custom-dates">
-        <label class="form-label small text-muted">{{ filter_form.date_from.label }}</label>
-        {{ filter_form.date_from }}
-      </div>
-      <div class="col-md-2 js-custom-dates">
-        <label class="form-label small text-muted">{{ filter_form.date_to.label }}</label>
-        {{ filter_form.date_to }}
-      </div>
-      <div class="col-md-2">
-        <label class="form-label small text-muted">{{ filter_form.type.label }}</label>
-        {{ filter_form.type }}
-      </div>
-      <div class="col-md-2">
-        <label class="form-label small text-muted">{{ filter_form.category.label }}</label>
-        {{ filter_form.category }}
-      </div>
-      <div class="col-md-1 d-grid">
-        <button type="submit" class="btn btn-outline-secondary">Найти</button>
-      </div>
-      {% if filter_form.non_field_errors %}
-        <div class="col-12"><div class="text-danger small">{{ filter_form.non_field_errors.0 }}</div></div>
-      {% endif %}
-    </form>
-  </div>
-</div>
+{% include 'finance/_filter_form.html' %}
 
 <div class="row g-3 mb-3">
   <div class="col-md-4">
@@ -110,15 +79,4 @@
 </div>
 {% endblock %}
 
-{% block scripts %}
-<script>
-  // Поля произвольных дат нужны только для периода «Произвольный период»
-  (function () {
-    const period = document.getElementById('id_period');
-    const custom = document.querySelectorAll('.js-custom-dates');
-    const sync = () => custom.forEach(el => el.classList.toggle('d-none', period.value !== 'custom'));
-    period.addEventListener('change', sync);
-    sync();
-  })();
-</script>
-{% endblock %}
+{% block scripts %}{% include 'finance/_period_script.html' %}{% endblock %}

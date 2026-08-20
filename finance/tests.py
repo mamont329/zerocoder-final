@@ -6,6 +6,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from . import analytics
 from .models import Category, OperationType, Transaction
 
 
@@ -171,3 +172,94 @@ class CategoryTests(TestCase):
         empty = Category.objects.create(user=self.user, name='Прочее', type=OperationType.EXPENSE)
         self.client.post(reverse('category_delete', args=[empty.pk]))
         self.assertFalse(Category.objects.filter(pk=empty.pk).exists())
+
+
+class AnalyticsTests(TestCase):
+    """Аналитика: агрегаты, ряды по времени, лимиты, аномалии и советы."""
+
+    def setUp(self):
+        self.user = User.objects.create_user('analyst', password='pass')
+        self.client.force_login(self.user)
+        self.food = self.user.categories.get(name='Еда')
+        self.salary = self.user.categories.get(name='Зарплата')
+        self.today = timezone.localdate()
+        self.month_start = self.today.replace(day=1)
+
+    def spend(self, amount, days_ago=0, category=None):
+        return Transaction.objects.create(
+            user=self.user, type=OperationType.EXPENSE, amount=Decimal(amount),
+            category=category or self.food, date=self.today - timedelta(days=days_ago),
+        )
+
+    def test_page_opens_without_data(self):
+        """Пустой период не ломает страницу: графиков нет, есть объяснение."""
+        response = self.client.get(reverse('analytics'))
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context['timeline_chart'])
+        self.assertEqual(response.context['advice'][0].level, 'info')
+
+    def test_charts_are_built_when_data_exists(self):
+        self.spend('500.00')
+        Transaction.objects.create(user=self.user, type=OperationType.INCOME,
+                                   amount=Decimal('1000.00'), category=self.salary, date=self.today)
+
+        response = self.client.get(reverse('analytics'))
+        self.assertIn('plotly', response.context['timeline_chart'])
+        self.assertIn('plotly', response.context['category_chart'])
+
+    def test_timeline_fills_gaps_with_zero(self):
+        """Дни без операций попадают в ряд нулями, иначе график врёт о динамике."""
+        self.spend('100.00', days_ago=2)
+        frame = analytics.timeline(self.user.transactions.all(),
+                                   self.today - timedelta(days=4), self.today)
+        self.assertEqual(len(frame), 5)
+        self.assertEqual(frame['expense'].sum(), 100.0)
+        self.assertEqual(frame['income'].sum(), 0.0)
+
+    def test_category_shares(self):
+        self.spend('750.00')
+        self.spend('250.00', category=self.user.categories.get(name='Транспорт'))
+
+        rows = analytics.expenses_by_category(self.user.transactions.all())
+        self.assertEqual(rows[0]['name'], 'Еда')
+        self.assertAlmostEqual(rows[0]['percent'], 75.0)
+        self.assertAlmostEqual(rows[1]['percent'], 25.0)
+
+    def test_limit_is_always_about_current_month(self):
+        """Годовой фильтр не должен превращать месячный лимит в годовой."""
+        self.food.monthly_limit = Decimal('1000.00')
+        self.food.save()
+        self.spend('900.00')                      # текущий месяц
+        self.spend('5000.00', days_ago=200)       # прошлый год
+
+        response = self.client.get(reverse('analytics'), {'period': 'year'})
+        usage = response.context['limits'][0]
+        self.assertEqual(usage['spent'], Decimal('900.00'))
+        self.assertFalse(usage['over'])
+
+    def test_limit_exceeded_produces_warning(self):
+        self.food.monthly_limit = Decimal('1000.00')
+        self.food.save()
+        self.spend('1500.00')
+
+        response = self.client.get(reverse('analytics'))
+        levels = {item.level for item in response.context['advice']}
+        titles = ' '.join(item.title for item in response.context['advice'])
+        self.assertIn('danger', levels)
+        self.assertIn('Лимит превышен', titles)
+
+    def test_anomaly_detected(self):
+        """Траты вдвое выше средних за три прошлых периода — это аномалия."""
+        for days in (35, 65, 95):
+            self.spend('1000.00', days_ago=days)
+        self.spend('4000.00', days_ago=1)
+
+        anomalies = analytics.find_anomalies(self.user, self.month_start, self.today)
+        self.assertTrue(any(item['name'] == 'Еда' for item in anomalies))
+
+    def test_stable_spending_is_not_anomaly(self):
+        for days in (35, 65, 95):
+            self.spend('1000.00', days_ago=days)
+        self.spend('1050.00', days_ago=1)
+
+        self.assertEqual(analytics.find_anomalies(self.user, self.month_start, self.today), [])

@@ -1,0 +1,11 @@
+<script>
+  // Поля произвольных дат нужны только для периода «Произвольный период»
+  (function () {
+    const period = document.getElementById('id_period');
+    const custom = document.querySelectorAll('.js-custom-dates');
+    if (!period) return;
+    const sync = () => custom.forEach(el => el.classList.toggle('d-none', period.value !== 'custom'));
+    period.addEventListener('change', sync);
+    sync();
+  })();
+</script>

@@ -1,0 +1,36 @@
+{% comment %}
+Фильтр периода. Поля произвольных дат показываются только для периода «custom» —
+скрипт лежит в base-блоке страницы, использующей этот include.
+{% endcomment %}
+<div class="card mb-3">
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end">
+      <div class="col-md-3">
+        <label class="form-label small text-muted">{{ filter_form.period.label }}</label>
+        {{ filter_form.period }}
+      </div>
+      <div class="col-md-2 js-custom-dates">
+        <label class="form-label small text-muted">{{ filter_form.date_from.label }}</label>
+        {{ filter_form.date_from }}
+      </div>
+      <div class="col-md-2 js-custom-dates">
+        <label class="form-label small text-muted">{{ filter_form.date_to.label }}</label>
+        {{ filter_form.date_to }}
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted">{{ filter_form.type.label }}</label>
+        {{ filter_form.type }}
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted">{{ filter_form.category.label }}</label>
+        {{ filter_form.category }}
+      </div>
+      <div class="col-md-1 d-grid">
+        <button type="submit" class="btn btn-outline-secondary">Найти</button>
+      </div>
+      {% if filter_form.non_field_errors %}
+        <div class="col-12"><div class="text-danger small">{{ filter_form.non_field_errors.0 }}</div></div>
+      {% endif %}
+    </form>
+  </div>
+</div>

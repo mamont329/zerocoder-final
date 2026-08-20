@@ -5,6 +5,8 @@ from . import views
 urlpatterns = [
     path('', views.DashboardView.as_view(), name='dashboard'),
 
+    path('analytics/', views.AnalyticsView.as_view(), name='analytics'),
+
     path('operations/', views.TransactionListView.as_view(), name='transaction_list'),
     path('operations/add/', views.TransactionCreateView.as_view(), name='transaction_add'),
     path('operations/<int:pk>/edit/', views.TransactionUpdateView.as_view(), name='transaction_edit'),

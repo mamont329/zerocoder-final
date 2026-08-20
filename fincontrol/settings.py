@@ -114,6 +114,9 @@ TIME_ZONE = 'Europe/Moscow'
 
 USE_I18N = True
 
+# Разряды разделяются пробелом: 1 234 567,89 — как принято в русской типографике
+USE_THOUSAND_SEPARATOR = True
+
 USE_TZ = True
 
 

@@ -1,0 +1,157 @@
+{% extends 'finance/base.html' %}
+
+{% block title %}Аналитика — FinControl{% endblock %}
+
+{% comment %}
+Фигуры plotly вставляются в разметку вместе со своими скриптами, поэтому
+библиотека подключается в head — иначе скрипт фигуры выполнится раньше неё.
+{% endcomment %}
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <h1 class="h3 mb-0">Аналитика</h1>
+  <span class="text-muted">{{ period_label }} · операций: {{ operations_count }}</span>
+</div>
+
+{% include 'finance/_filter_form.html' %}
+
+<div class="row g-3 mb-3">
+  <div class="col-md-4">
+    <div class="card h-100"><div class="card-body">
+      <div class="text-muted small text-uppercase">Доходы</div>
+      <div class="stat-value amount-income">{{ totals.income|floatformat:2 }} ₽</div>
+    </div></div>
+  </div>
+  <div class="col-md-4">
+    <div class="card h-100"><div class="card-body">
+      <div class="text-muted small text-uppercase">Расходы</div>
+      <div class="stat-value amount-expense">{{ totals.expense|floatformat:2 }} ₽</div>
+    </div></div>
+  </div>
+  <div class="col-md-4">
+    <div class="card h-100"><div class="card-body">
+      <div class="text-muted small text-uppercase">Баланс</div>
+      <div class="stat-value {% if totals.balance < 0 %}amount-expense{% else %}amount-income{% endif %}">
+        {{ totals.balance|floatformat:2 }} ₽
+      </div>
+    </div></div>
+  </div>
+</div>
+
+{% if advice %}
+  <div class="row g-3 mb-3">
+    {% for item in advice %}
+      <div class="col-lg-6">
+        <div class="alert alert-{{ item.level }} mb-0" role="alert">
+          <div class="fw-semibold">{{ item.title }}</div>
+          <div class="small">{{ item.text }}</div>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+{% endif %}
+
+<div class="card mb-3">
+  <div class="card-body">
+    <h2 class="h5 mb-3">Доходы и расходы во времени</h2>
+    {% if timeline_chart %}
+      {{ timeline_chart|safe }}
+    {% else %}
+      <p class="text-muted mb-0">За выбранный период операций нет.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <h2 class="h5 mb-1">Нарастающий итог</h2>
+    <p class="text-muted small">Сколько получено и потрачено с начала периода — накопленным итогом.</p>
+    {% if cumulative_chart %}
+      {{ cumulative_chart|safe }}
+    {% else %}
+      <p class="text-muted mb-0">За выбранный период операций нет.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-body">
+        <h2 class="h5 mb-3">Структура расходов</h2>
+        {% if category_chart %}
+          {{ category_chart|safe }}
+        {% else %}
+          <p class="text-muted mb-0">Расходов за период не было.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-body">
+        <h2 class="h5 mb-3">Расходы по категориям</h2>
+        {% if categories %}
+          <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+              <thead>
+                <tr class="text-muted small text-uppercase">
+                  <th>Категория</th><th class="text-end">Сумма</th><th class="text-end">Доля</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in categories %}
+                  <tr>
+                    <td>{{ row.name }}</td>
+                    <td class="text-end fw-semibold">{{ row.total|floatformat:2 }} ₽</td>
+                    <td class="text-end text-muted">{{ row.percent|floatformat:1 }} %</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="text-muted mb-0">Расходов за период не было.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body">
+    <h2 class="h5 mb-1">Лимиты по категориям</h2>
+    <p class="text-muted small">Всегда за текущий месяц — лимит месячный и от выбранного периода не зависит.</p>
+    {% if limits %}
+      {% for item in limits %}
+        <div class="mb-3">
+          <div class="d-flex justify-content-between align-items-baseline">
+            <span class="fw-semibold">{{ item.category.name }}</span>
+            <span class="small {% if item.over %}amount-expense{% else %}text-muted{% endif %}">
+              {{ item.spent|floatformat:2 }} ₽ из {{ item.limit|floatformat:2 }} ₽
+              {% if item.over %}· превышен{% endif %}
+            </span>
+          </div>
+          <div class="progress mt-1" role="progressbar"
+               aria-label="Использовано лимита по категории {{ item.category.name }}"
+               aria-valuenow="{{ item.percent|floatformat:0 }}" aria-valuemin="0" aria-valuemax="100"
+               style="height: .5rem">
+            <div class="progress-bar {% if item.over %}bg-danger{% elif item.share >= 0.8 %}bg-warning{% else %}bg-success{% endif %}"
+                 style="width: {{ item.percent|floatformat:0 }}%"></div>
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p class="text-muted mb-0">
+        Лимиты не заданы. Их можно указать при <a href="{% url 'category_list' %}">редактировании категории</a>.
+      </p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}{% include 'finance/_period_script.html' %}{% endblock %}
