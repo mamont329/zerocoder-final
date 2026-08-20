@@ -18,6 +18,44 @@
 
 {% include 'finance/_filter_form.html' %}
 
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <span class="fw-semibold me-1" data-bs-toggle="tooltip"
+            title="Сохранённые наборы фильтров: период, тип и категория">Избранные отчёты</span>
+
+      {% for report in saved_reports %}
+        <span class="badge text-bg-light border d-inline-flex align-items-center gap-2 p-2">
+          <a href="{% url 'analytics' %}?{{ report.as_query }}" class="text-decoration-none"
+             data-bs-toggle="tooltip" title="Применить сохранённые фильтры">{{ report.name }}</a>
+          <form method="post" action="{% url 'report_delete' report.pk %}" class="m-0">
+            {% csrf_token %}
+            <button type="submit" class="btn-close btn-close-sm" aria-label="Удалить"
+                    data-bs-toggle="tooltip" title="Удалить отчёт из избранного"></button>
+          </form>
+        </span>
+      {% empty %}
+        <span class="text-muted small me-2">пока пусто</span>
+      {% endfor %}
+
+      <form method="post" action="{% url 'report_save' %}" class="d-flex gap-2 ms-auto">
+        {% csrf_token %}
+        {# Текущие фильтры уходят вместе с названием, чтобы отчёт запомнил именно их #}
+        <input type="hidden" name="period" value="{{ filter_form.period.value|default:'month' }}">
+        <input type="hidden" name="date_from" value="{{ filter_form.date_from.value|default:'' }}">
+        <input type="hidden" name="date_to" value="{{ filter_form.date_to.value|default:'' }}">
+        <input type="hidden" name="type" value="{{ filter_form.type.value|default:'' }}">
+        <input type="hidden" name="category" value="{{ filter_form.category.value|default:'' }}">
+        {{ save_form.name }}
+        <button type="submit" class="btn btn-outline-primary text-nowrap"
+                data-bs-toggle="tooltip" title="Запомнить текущие фильтры под этим именем">
+          Сохранить отчёт
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+
 <div class="row g-3 mb-3">
   <div class="col-md-4">
     <div class="card h-100"><div class="card-body">

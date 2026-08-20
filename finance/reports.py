@@ -3,12 +3,19 @@
 Считают то же самое, что и веб-аналитика: те же функции из analytics,
 только на выходе не графики, а строки. Формат — HTML разметка Telegram.
 """
+from decimal import Decimal
+
+from django.utils import timezone
+
 from . import analytics, periods
 from .analytics import money
 from .models import OperationType
 
 # Сколько категорий показывать в сводке, чтобы сообщение оставалось читаемым
 TOP_CATEGORIES = 5
+
+# С какой доли израсходованного лимита предупреждать заранее
+NEAR_LIMIT_SHARE = Decimal('0.8')
 
 
 def _period_queryset(user, period):
@@ -197,11 +204,33 @@ def daily_digest(user):
         for row in categories[:3]:
             lines.append(f'· {row["name"]} — {money(row["total"])} ₽')
 
-    warnings = [item for item in analytics.build_advice(user, queryset, start, end)
-                if item.level in ('danger', 'warning')]
-    if warnings:
-        lines.append('')
-        for item in warnings[:2]:
-            lines.append(f'⚠️ {item.title}: {item.text}')
-
     return '\n'.join(lines)
+
+
+def limit_warnings(user, today=None):
+    """Предупреждения о лимитах вместе с ключом события.
+
+    Ключ содержит категорию и месяц: превышение по «Еде» в августе — одно
+    событие, и повторять его каждый вечер до конца месяца незачем. По этому
+    ключу рассылка отмечает отправку в истории уведомлений.
+    """
+    today = today or timezone.localdate()
+    month = f'{today:%Y-%m}'
+
+    warnings = []
+    for usage in analytics.limit_usage(user):
+        category = usage['category']
+        if usage['over']:
+            warnings.append((
+                f'limit:{category.pk}:{month}',
+                f'‼️ <b>Лимит превышен: {category.name}</b>\n'
+                f'Потрачено {money(usage["spent"])} ₽ при лимите {money(usage["limit"])} ₽.',
+            ))
+        elif usage['share'] >= NEAR_LIMIT_SHARE:
+            warnings.append((
+                f'near:{category.pk}:{month}',
+                f'⚠️ <b>Лимит почти исчерпан: {category.name}</b>\n'
+                f'Израсходовано {usage["percent"]:.0f}%, осталось '
+                f'{money(usage["limit"] - usage["spent"])} ₽.',
+            ))
+    return warnings

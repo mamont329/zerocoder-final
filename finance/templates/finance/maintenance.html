@@ -1,0 +1,167 @@
+{% extends 'finance/base.html' %}
+
+{% block title %}Обслуживание — FinControl{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <h1 class="h3 mb-0">Обслуживание</h1>
+  <span class="text-muted">Рассылка уведомлений: состояние, запуск и история. Раздел для сотрудников</span>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <h2 class="h5 mb-3" data-bs-toggle="tooltip"
+        title="Те же действия доступны в консоли командой manage.py senddigest">
+      Запуск рассылки
+    </h2>
+
+    <p class="text-muted">
+      Рассылка не повторяется: отправленное записывается в историю. Поэтому
+      обычный запуск может промолчать — тогда нужна кнопка «Отправить повторно».
+    </p>
+
+    <form method="post" class="row g-2 align-items-end">
+      {% csrf_token %}
+
+      <div class="col-md-4">
+        <label class="form-label small text-muted" for="username">Получатель</label>
+        <select name="username" id="username" class="form-select" data-bs-toggle="tooltip"
+                title="Можно проверить доставку на одном человеке, не трогая остальных">
+          <option value="">Все получатели</option>
+          {% for candidate in candidates %}
+            <option value="{{ candidate.username }}">{{ candidate.username }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="col-md-8">
+        <div class="d-flex flex-wrap gap-2">
+          <button type="submit" name="action" value="status" class="btn btn-outline-secondary"
+                  data-bs-toggle="tooltip" title="Кому и когда уходили сводки — ничего не отправляет">
+            Состояние
+          </button>
+          <button type="submit" name="action" value="dry_run" class="btn btn-outline-secondary"
+                  data-bs-toggle="tooltip" title="Показать текст сообщения, ничего не отправляя">
+            Показать текст
+          </button>
+          <button type="submit" name="action" value="send" class="btn btn-primary"
+                  data-bs-toggle="tooltip" title="Обычный запуск: то же, что делает расписание">
+            Отправить
+          </button>
+          <button type="submit" name="action" value="force" class="btn btn-outline-danger"
+                  data-bs-toggle="tooltip"
+                  title="Повторная отправка в обход истории — для проверки доставки">
+            Отправить повторно
+          </button>
+        </div>
+      </div>
+    </form>
+
+    <dl class="row small text-muted mt-3 mb-0">
+      <dt class="col-sm-3">Состояние</dt>
+      <dd class="col-sm-9">Кому и когда уходили сводки. Ничего не отправляет.</dd>
+
+      <dt class="col-sm-3">Показать текст</dt>
+      <dd class="col-sm-9">
+        Готовое сообщение целиком, как его увидит пользователь. Историю не учитывает,
+        поэтому текст виден даже когда рассылка сегодня уже отработала.
+      </dd>
+
+      <dt class="col-sm-3">Отправить</dt>
+      <dd class="col-sm-9">
+        То же, что делает расписание: уходит только то, чего сегодня ещё не отправляли.
+      </dd>
+
+      <dt class="col-sm-3">Отправить повторно</dt>
+      <dd class="col-sm-9">
+        Доставляет сообщение ещё раз, даже если оно уже уходило — для проверки,
+        что бот действительно доносит уведомления.
+      </dd>
+    </dl>
+  </div>
+</div>
+
+{% if output %}
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="d-flex justify-content-between align-items-baseline mb-2">
+        <h2 class="h5 mb-0">{{ output.title }}</h2>
+        <code class="small text-muted" data-bs-toggle="tooltip"
+              title="Та же команда для консоли или планировщика задач">{{ output.command }}</code>
+      </div>
+      <pre class="bg-light border rounded p-3 mb-0" style="white-space: pre-wrap">{{ output.text }}</pre>
+    </div>
+  </div>
+{% endif %}
+
+<div class="row g-3">
+  <div class="col-lg-5">
+    <div class="card h-100">
+      <div class="card-body">
+        <h2 class="h5 mb-3" data-bs-toggle="tooltip"
+            title="Нужен привязанный Telegram и включённый «Ежедневный отчёт» в профиле">
+          Получатели
+        </h2>
+
+        {% if recipients %}
+          <table class="table table-sm align-middle mb-0">
+            <tbody>
+              {% for item in recipients %}
+                <tr>
+                  <td>{{ item.username }}</td>
+                  <td class="text-muted small text-end">чат {{ item.profile.telegram_id }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="text-muted mb-0">
+            Получателей нет: никто не привязал Telegram или всем отключены уведомления.
+          </p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-7">
+    <div class="card h-100">
+      <div class="card-body">
+        <h2 class="h5 mb-3" data-bs-toggle="tooltip"
+            title="По этим записям рассылка понимает, что уже отправляла">
+          История уведомлений
+        </h2>
+
+        {% if notifications %}
+          <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+              <thead>
+                <tr class="text-muted small text-uppercase">
+                  <th>Когда</th><th>Кому</th><th>Что</th><th>Ключ события</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item in notifications %}
+                  <tr>
+                    <td class="text-muted">{{ item.sent_at|date:"d.m.Y H:i" }}</td>
+                    <td>{{ item.user.username }}</td>
+                    <td>{{ item.get_kind_display }}</td>
+                    <td><code class="small">{{ item.key }}</code></td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="text-muted mb-0">Уведомлений ещё не отправлялось.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="text-muted small mt-3">
+  Те же действия из консоли: <code>python manage.py senddigest --status</code>.
+  Для расписания используется запуск без ключей — им и стоит проверять,
+  отработал ли планировщик.
+</p>
+{% endblock %}

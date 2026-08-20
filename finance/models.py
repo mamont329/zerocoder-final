@@ -1,4 +1,5 @@
 import secrets
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -197,6 +198,102 @@ class Profile(models.Model):
         self.telegram_id = None
         self.link_code = self.generate_code()
         self.save(update_fields=['telegram_id', 'link_code'])
+
+
+class NotificationLog(models.Model):
+    """Что и когда бот уже отправлял пользователю.
+
+    Нужна, чтобы не повторяться: предупреждение о превышенном лимите
+    интересно один раз за месяц, а не каждый вечер до конца месяца.
+    """
+
+    class Kind(models.TextChoices):
+        DIGEST = 'digest', 'Сводка за день'
+        LIMIT = 'limit', 'Превышение лимита'
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='notifications',
+        verbose_name='Пользователь',
+    )
+    kind = models.CharField('Тип', max_length=20, choices=Kind.choices)
+    key = models.CharField(
+        'Ключ события',
+        max_length=100,
+        help_text='Отличает события друг от друга: дата сводки, категория и месяц лимита',
+    )
+    sent_at = models.DateTimeField('Отправлено', auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'уведомление'
+        verbose_name_plural = 'уведомления'
+        ordering = ['-sent_at']
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'kind', 'key'], name='unique_notification'),
+        ]
+
+    def __str__(self):
+        return f'{self.get_kind_display()} · {self.key}'
+
+    @classmethod
+    def send_once(cls, user, kind, key):
+        """Отмечает событие отправленным. False — значит уже отправляли.
+
+        Ограничение уникальности в базе делает проверку надёжной даже если
+        рассылка случайно запустится дважды одновременно.
+        """
+        _, created = cls.objects.get_or_create(user=user, kind=kind, key=key)
+        return created
+
+
+class SavedReport(models.Model):
+    """Избранный отчёт — сохранённый набор фильтров под своим именем."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='saved_reports',
+        verbose_name='Пользователь',
+    )
+    name = models.CharField('Название', max_length=100)
+    period = models.CharField('Период', max_length=20)
+    date_from = models.DateField('С', null=True, blank=True)
+    date_to = models.DateField('По', null=True, blank=True)
+    type = models.CharField('Тип операций', max_length=10, blank=True)
+    category = models.ForeignKey(
+        Category,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='saved_reports',
+        verbose_name='Категория',
+    )
+    created_at = models.DateTimeField('Создан', auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'сохранённый отчёт'
+        verbose_name_plural = 'сохранённые отчёты'
+        ordering = ['name']
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'name'], name='unique_report_per_user'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+    def as_query(self):
+        """Параметры запроса, восстанавливающие фильтр на странице."""
+        params = {'period': self.period}
+        if self.date_from:
+            params['date_from'] = self.date_from.isoformat()
+        if self.date_to:
+            params['date_to'] = self.date_to.isoformat()
+        if self.type:
+            params['type'] = self.type
+        if self.category_id:
+            params['category'] = str(self.category_id)
+        return urlencode(params)
 
 
 def purge_user(user):

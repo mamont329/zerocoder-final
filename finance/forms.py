@@ -4,7 +4,7 @@ from django.contrib.auth.forms import PasswordChangeForm, UserCreationForm
 from django.contrib.auth.models import User
 
 from . import periods
-from .models import Category, OperationType, Profile, Transaction
+from .models import Category, OperationType, Profile, SavedReport, Transaction
 
 CONTROL = {'class': 'form-control'}
 SELECT = {'class': 'form-select'}
@@ -304,3 +304,26 @@ class SitePasswordChangeForm(PasswordChangeForm):
         if self.user.check_password(password):
             raise forms.ValidationError('Новый пароль совпадает с текущим — придумайте другой.')
         return password
+
+
+class SavedReportForm(UserOwnedFormMixin, forms.ModelForm):
+    """Сохранение текущего набора фильтров под своим именем.
+
+    Сами фильтры берутся из формы фильтра, поэтому здесь только название:
+    пользователь не заполняет то, что уже выбрал на странице.
+    """
+
+    class Meta:
+        model = SavedReport
+        fields = ('name',)
+        labels = {'name': 'Название отчёта'}
+        widgets = {'name': forms.TextInput(attrs={
+            **CONTROL, 'placeholder': 'Например: Месячный анализ',
+        })}
+
+    def clean_name(self):
+        name = self.cleaned_data['name'].strip()
+        existing = SavedReport.objects.filter(user=self.user).exclude(pk=self.instance.pk)
+        if any(report.name.casefold() == name.casefold() for report in existing):
+            raise forms.ValidationError('Отчёт с таким названием уже сохранён.')
+        return name

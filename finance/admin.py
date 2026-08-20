@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
 
-from .models import Category, Profile, Transaction, purge_user
+from .models import Category, NotificationLog, Profile, SavedReport, Transaction, purge_user
 
 
 @admin.register(Category)
@@ -25,6 +25,20 @@ class ProfileAdmin(admin.ModelAdmin):
     list_display = ('user', 'telegram_id', 'daily_report')
     list_filter = ('daily_report',)
     readonly_fields = ('link_code',)
+
+
+@admin.register(NotificationLog)
+class NotificationLogAdmin(admin.ModelAdmin):
+    list_display = ('sent_at', 'user', 'kind', 'key')
+    list_filter = ('kind', 'sent_at')
+    readonly_fields = ('sent_at',)
+
+
+@admin.register(SavedReport)
+class SavedReportAdmin(admin.ModelAdmin):
+    list_display = ('name', 'user', 'period', 'type', 'category')
+    list_filter = ('period', 'type')
+    search_fields = ('name',)
 
 
 class UserWithDataAdmin(UserAdmin):

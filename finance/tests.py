@@ -1,9 +1,12 @@
 from datetime import timedelta
 from decimal import Decimal
+from io import StringIO
+from unittest.mock import patch
 
 from asgiref.sync import async_to_sync
 from django.contrib.auth.models import User
 from django.core import mail
+from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -11,7 +14,7 @@ from django.utils import timezone
 from . import accounts, analytics, periods, reports
 from .bot import services
 from .bot.keyboards import categories_keyboard, report_actions
-from .models import Category, OperationType, Transaction
+from .models import Category, NotificationLog, OperationType, SavedReport, Transaction
 
 
 class SignUpTests(TestCase):
@@ -953,3 +956,255 @@ class PasswordChangeFormTests(TestCase):
 
         requirements = response.context['form'].fields['new_password1'].help_text
         self.assertIn('<li>Новый пароль должен отличаться от текущего.</li>', requirements)
+
+
+class DailyDigestTests(TestCase):
+    """Рассылка сводок и защита от повторов."""
+
+    def setUp(self):
+        self.user = User.objects.create_user('member', password='pass')
+        profile = self.user.profile
+        profile.telegram_id = 12345
+        profile.daily_report = True
+        profile.save()
+
+        self.food = self.user.categories.get(name='Еда')
+        self.today = timezone.localdate()
+
+    def spend(self, amount, days_ago=0):
+        Transaction.objects.create(user=self.user, type=OperationType.EXPENSE,
+                                   amount=Decimal(amount), category=self.food,
+                                   date=self.today - timedelta(days=days_ago))
+
+    def run_command(self, **options):
+        output = StringIO()
+        call_command('senddigest', stdout=output, **options)
+        return output.getvalue()
+
+    def test_digest_is_sent_once_a_day(self):
+        self.spend('500.00')
+        with patch('finance.management.commands.senddigest.send_to_chat', return_value=True) as send:
+            self.run_command()
+            self.assertEqual(send.call_count, 1)
+
+            # Повторный запуск в тот же день ничего не шлёт
+            self.run_command()
+            self.assertEqual(send.call_count, 1)
+
+    def test_nothing_to_send_without_operations(self):
+        with patch('finance.management.commands.senddigest.send_to_chat') as send:
+            output = self.run_command()
+            send.assert_not_called()
+            self.assertIn('нет операций', output)
+
+    def test_already_sent_says_so_explicitly(self):
+        """«Уже отправлено» и «нет данных» — разные случаи, и звучат по-разному."""
+        self.spend('500.00')
+        with patch('finance.management.commands.senddigest.send_to_chat', return_value=True):
+            self.run_command()
+
+        with patch('finance.management.commands.senddigest.send_to_chat'):
+            output = self.run_command()
+        self.assertIn('уже отправлено сегодня', output)
+        self.assertNotIn('нет операций', output)
+
+    def test_preview_shows_text_even_after_sending(self):
+        """Показ текста не смотрит в историю: его задача — показать сообщение."""
+        self.spend('500.00')
+        with patch('finance.management.commands.senddigest.send_to_chat', return_value=True):
+            self.run_command()
+
+        output = self.run_command(dry_run=True)
+        self.assertIn('Итоги дня', output)
+        self.assertIn('уже отправлено сегодня', output)
+
+    def test_preview_warns_that_send_will_deliver(self):
+        self.spend('500.00')
+        output = self.run_command(dry_run=True)
+        self.assertIn('Итоги дня', output)
+        self.assertIn('Обычный запуск отправит', output)
+
+    def test_limit_warning_is_sent_once_a_month(self):
+        """Превышенный лимит напоминает о себе один раз, а не каждый вечер."""
+        self.food.monthly_limit = Decimal('100.00')
+        self.food.save()
+        self.spend('500.00')
+
+        with patch('finance.management.commands.senddigest.send_to_chat', return_value=True) as send:
+            self.run_command()
+            self.assertIn('Лимит превышен', send.call_args[0][1])
+
+        # На следующий день сводка новая, а предупреждение уже отправляли
+        NotificationLog.objects.filter(kind=NotificationLog.Kind.DIGEST).delete()
+        with patch('finance.management.commands.senddigest.send_to_chat', return_value=True) as send:
+            self.run_command()
+            self.assertNotIn('Лимит превышен', send.call_args[0][1])
+            self.assertIn('Итоги дня', send.call_args[0][1])
+
+    def test_dry_run_changes_nothing(self):
+        self.spend('500.00')
+        with patch('finance.management.commands.senddigest.send_to_chat') as send:
+            self.run_command(dry_run=True)
+            send.assert_not_called()
+        self.assertEqual(NotificationLog.objects.count(), 0)
+
+    def test_disabled_notifications_are_skipped(self):
+        self.spend('500.00')
+        profile = self.user.profile
+        profile.daily_report = False
+        profile.save(update_fields=['daily_report'])
+
+        with patch('finance.management.commands.senddigest.send_to_chat') as send:
+            self.run_command()
+            send.assert_not_called()
+
+    def test_failed_delivery_is_retried_next_time(self):
+        """Недоставленное сообщение не отмечается отправленным."""
+        self.spend('500.00')
+        with patch('finance.management.commands.senddigest.send_to_chat', return_value=False):
+            self.run_command()
+
+        with patch('finance.management.commands.senddigest.send_to_chat', return_value=True) as send:
+            NotificationLog.objects.all().delete()
+            self.run_command()
+            self.assertEqual(send.call_count, 1)
+
+
+class SavedReportTests(TestCase):
+    """Избранные отчёты — сохранённые наборы фильтров."""
+
+    def setUp(self):
+        self.user = User.objects.create_user('member', password='pass')
+        self.client.force_login(self.user)
+        self.food = self.user.categories.get(name='Еда')
+
+    def save_report(self, name='Месячный анализ', **filters):
+        data = {'name': name, 'period': 'month', 'date_from': '', 'date_to': '',
+                'type': 'expense', 'category': ''}
+        data.update(filters)
+        return self.client.post(reverse('report_save'), data)
+
+    def test_report_keeps_current_filters(self):
+        response = self.save_report(category=str(self.food.pk))
+        report = self.user.saved_reports.get()
+        self.assertEqual(report.name, 'Месячный анализ')
+        self.assertEqual(report.period, 'month')
+        self.assertEqual(report.type, 'expense')
+        self.assertEqual(report.category, self.food)
+        # После сохранения возвращаемся на страницу с теми же фильтрами
+        self.assertIn(f'category={self.food.pk}', response.url)
+
+    def test_saved_report_link_restores_filters(self):
+        self.save_report(period='custom', date_from='2026-01-01', date_to='2026-03-31')
+        report = self.user.saved_reports.get()
+        self.assertIn('period=custom', report.as_query())
+        self.assertIn('date_from=2026-01-01', report.as_query())
+
+        response = self.client.get(f"{reverse('analytics')}?{report.as_query()}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['filter_form'].cleaned_data['period'], 'custom')
+
+    def test_duplicate_name_rejected(self):
+        self.save_report()
+        self.save_report()
+        self.assertEqual(self.user.saved_reports.count(), 1)
+
+    def test_reports_are_private(self):
+        self.save_report()
+        stranger = User.objects.create_user('stranger', password='pass')
+        self.client.force_login(stranger)
+        self.assertEqual(len(self.client.get(reverse('analytics')).context['saved_reports']), 0)
+
+    def test_report_can_be_deleted(self):
+        self.save_report()
+        report = self.user.saved_reports.get()
+        self.client.post(reverse('report_delete', args=[report.pk]))
+        self.assertEqual(self.user.saved_reports.count(), 0)
+
+    def test_stranger_cannot_delete_report(self):
+        self.save_report()
+        report = self.user.saved_reports.get()
+
+        stranger = User.objects.create_user('stranger', password='pass')
+        self.client.force_login(stranger)
+        response = self.client.post(reverse('report_delete', args=[report.pk]))
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(SavedReport.objects.filter(pk=report.pk).exists())
+
+
+class MaintenanceViewTests(TestCase):
+    """Раздел обслуживания: запуск рассылки кнопками."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user('staff', password='pass', is_staff=True)
+        self.member = User.objects.create_user('member', password='pass')
+        profile = self.member.profile
+        profile.telegram_id = 99999
+        profile.daily_report = True
+        profile.save()
+
+        Transaction.objects.create(user=self.member, type=OperationType.EXPENSE,
+                                   amount=Decimal('100.00'),
+                                   category=self.member.categories.get(name='Еда'))
+        self.client.force_login(self.staff)
+
+    def test_section_is_closed_for_regular_users(self):
+        self.client.force_login(self.member)
+        self.assertEqual(self.client.get(reverse('maintenance')).status_code, 403)
+
+    def test_page_shows_recipients(self):
+        response = self.client.get(reverse('maintenance'))
+        self.assertEqual(list(response.context['recipients']), [self.member])
+
+    def test_status_action_does_not_send(self):
+        with patch('finance.management.commands.senddigest.send_to_chat') as send:
+            self.client.post(reverse('maintenance'), {'action': 'status'})
+            send.assert_not_called()
+
+        output = self.client.get(reverse('maintenance')).context['output']
+        self.assertIn('последняя сводка', output['text'])
+        self.assertEqual(output['command'], 'python manage.py senddigest --status')
+
+    def test_send_action_delivers_message(self):
+        with patch('finance.management.commands.senddigest.send_to_chat', return_value=True) as send:
+            self.client.post(reverse('maintenance'), {'action': 'send'})
+            self.assertEqual(send.call_count, 1)
+
+        self.assertIn('отправлено', self.client.get(reverse('maintenance')).context['output']['text'])
+
+    def test_force_repeats_delivery(self):
+        with patch('finance.management.commands.senddigest.send_to_chat', return_value=True) as send:
+            self.client.post(reverse('maintenance'), {'action': 'send'})
+            self.client.post(reverse('maintenance'), {'action': 'send'})
+            self.assertEqual(send.call_count, 1)
+
+            self.client.post(reverse('maintenance'), {'action': 'force'})
+            self.assertEqual(send.call_count, 2)
+
+    def test_action_can_target_single_user(self):
+        other = User.objects.create_user('other', password='pass')
+        profile = other.profile
+        profile.telegram_id = 88888
+        profile.daily_report = True
+        profile.save()
+
+        response = self.client.post(reverse('maintenance'),
+                                    {'action': 'status', 'username': 'member'})
+        # Без перехода по ссылке: вывод показывается один раз и стирается
+        self.assertRedirects(response, reverse('maintenance'), fetch_redirect_response=False)
+        output = self.client.get(reverse('maintenance')).context['output']
+        self.assertIn('member', output['text'])
+        self.assertNotIn('other', output['text'])
+        self.assertIn('--user member', output['command'])
+
+    def test_output_is_shown_once(self):
+        """Обновление страницы не запускает команду повторно."""
+        self.client.post(reverse('maintenance'), {'action': 'status'})
+        self.assertIsNotNone(self.client.get(reverse('maintenance')).context['output'])
+        self.assertIsNone(self.client.get(reverse('maintenance')).context['output'])
+
+    def test_unknown_action_is_rejected(self):
+        with patch('finance.management.commands.senddigest.send_to_chat') as send:
+            response = self.client.post(reverse('maintenance'), {'action': 'rm -rf'}, follow=True)
+            send.assert_not_called()
+        self.assertContains(response, 'Неизвестное действие')

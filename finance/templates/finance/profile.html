@@ -63,6 +63,21 @@
         </form>
 
         <hr class="my-4">
+        <h2 class="h6" data-bs-toggle="tooltip"
+            title="Что бот присылал по расписанию. Пусто — значит рассылка ещё не отрабатывала">
+          Последние уведомления
+        </h2>
+        {% if notifications %}
+          <ul class="list-unstyled small text-muted mb-0">
+            {% for item in notifications %}
+              <li>{{ item.sent_at|date:"d.m.Y H:i" }} — {{ item.get_kind_display }}</li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="text-muted small mb-0">Уведомлений ещё не было.</p>
+        {% endif %}
+
+        <hr class="my-4">
         <h2 class="h6">Аккаунт</h2>
         <p class="text-muted small">
           Пользователь: <strong>{{ user.username }}</strong><br>

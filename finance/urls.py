@@ -6,6 +6,8 @@ urlpatterns = [
     path('', views.DashboardView.as_view(), name='dashboard'),
 
     path('analytics/', views.AnalyticsView.as_view(), name='analytics'),
+    path('analytics/reports/save/', views.SavedReportCreateView.as_view(), name='report_save'),
+    path('analytics/reports/<int:pk>/delete/', views.SavedReportDeleteView.as_view(), name='report_delete'),
 
     path('operations/', views.TransactionListView.as_view(), name='transaction_list'),
     path('operations/add/', views.TransactionCreateView.as_view(), name='transaction_add'),
@@ -16,6 +18,8 @@ urlpatterns = [
     path('profile/telegram/unlink/', views.TelegramUnlinkView.as_view(), name='telegram_unlink'),
     path('profile/account/', views.AccountUpdateView.as_view(), name='account_edit'),
     path('profile/deactivate/', views.AccountDeactivateView.as_view(), name='account_deactivate'),
+
+    path('maintenance/', views.MaintenanceView.as_view(), name='maintenance'),
 
     path('users/', views.UserListView.as_view(), name='user_list'),
     path('users/add/', views.UserCreateView.as_view(), name='user_add'),

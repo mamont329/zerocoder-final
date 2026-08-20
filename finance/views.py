@@ -1,10 +1,12 @@
 import os
 from decimal import Decimal
+from io import StringIO
 
 from django.contrib import messages
 from django.contrib.auth import login, logout
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.contrib.auth.views import PasswordChangeView
+from django.core.management import call_command
 from django.contrib.auth.models import User
 from django.db.models import Count, Max, Min, ProtectedError, Sum
 from django.shortcuts import get_object_or_404, redirect, render
@@ -14,9 +16,10 @@ from django.views.generic import CreateView, DeleteView, ListView, TemplateView,
 
 from . import accounts, analytics, charts, periods
 from .analytics import totals
-from .forms import (AccountForm, CategoryForm, ProfileForm, SignUpForm, SitePasswordChangeForm,
-                    TransactionFilterForm, TransactionForm, UserCreateForm)
-from .models import Category, OperationType, Transaction, purge_user
+from .forms import (AccountForm, CategoryForm, ProfileForm, SavedReportForm, SignUpForm,
+                    SitePasswordChangeForm, TransactionFilterForm, TransactionForm, UserCreateForm)
+from .models import (Category, NotificationLog, OperationType, SavedReport, Transaction,
+                     purge_user)
 
 ZERO = Decimal('0.00')
 
@@ -200,6 +203,8 @@ class AnalyticsView(FilteredTransactionsMixin, TemplateView):
 
         categories = analytics.expenses_by_category(queryset)
         context.update({
+            'saved_reports': user.saved_reports.select_related('category'),
+            'save_form': SavedReportForm(user=user),
             'comparison': comparison,
             'previous_label': periods.period_label(period, *previous_bounds),
             'totals': totals(queryset),
@@ -328,6 +333,8 @@ class ProfileView(LoginRequiredMixin, UpdateView):
         context['profile'] = self.object
         context['bot_username'] = os.getenv('TELEGRAM_BOT_USERNAME', '')
         context['is_last_staff'] = is_last_active_staff(self.request.user)
+        # Последние уведомления — чтобы видеть, работает ли рассылка по расписанию
+        context['notifications'] = self.request.user.notifications.all()[:5]
         return context
 
     def form_valid(self, form):
@@ -565,3 +572,111 @@ class SitePasswordChangeView(LoginRequiredMixin, PasswordChangeView):
             profile.save(update_fields=['must_change_password'])
             messages.success(self.request, 'Пароль задан, доступ к сервису открыт.')
         return response
+
+
+class SavedReportCreateView(LoginRequiredMixin, UserFormMixin, CreateView):
+    """Сохраняет фильтры, выбранные на странице аналитики."""
+
+    form_class = SavedReportForm
+    http_method_names = ['post']
+
+    def form_valid(self, form):
+        filters = TransactionFilterForm(self.request.POST, user=self.request.user)
+        filters.is_valid()
+        data = filters.cleaned_data
+
+        report = form.save(commit=False)
+        report.period = data.get('period') or periods.MONTH
+        report.date_from = data.get('date_from')
+        report.date_to = data.get('date_to')
+        report.type = data.get('type') or ''
+        report.category = data.get('category')
+        report.save()
+
+        messages.success(self.request, f'Отчёт «{report.name}» сохранён.')
+        return redirect(f"{reverse_lazy('analytics')}?{report.as_query()}")
+
+    def form_invalid(self, form):
+        messages.error(self.request, form.errors['name'][0] if form.errors.get('name')
+                       else 'Не удалось сохранить отчёт.')
+        return redirect(self.request.META.get('HTTP_REFERER', reverse_lazy('analytics')))
+
+
+class SavedReportDeleteView(OwnedQuerysetMixin, DeleteView):
+    """Удаление избранного отчёта. Операции при этом не трогаются."""
+
+    model = SavedReport
+    http_method_names = ['post']
+    success_url = reverse_lazy('analytics')
+
+    def form_valid(self, form):
+        messages.success(self.request, f'Отчёт «{self.object.name}» удалён.')
+        return super().form_valid(form)
+
+
+class MaintenanceView(StaffRequiredMixin, TemplateView):
+    """Обслуживание: состояние рассылки и запуск команд из интерфейса.
+
+    Те же ключи, что у `manage.py senddigest`, только кнопками — чтобы
+    проверять доставку и работу расписания, не заходя на сервер.
+    """
+
+    template_name = 'finance/maintenance.html'
+
+    # Что можно запустить и с какими аргументами
+    ACTIONS = {
+        'status': ('Состояние рассылки', {'status': True}),
+        'dry_run': ('Показать текст без отправки', {'dry_run': True}),
+        'send': ('Отправить сводки', {}),
+        'force': ('Отправить повторно', {'force': True}),
+    }
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['recipients'] = User.objects.filter(
+            is_active=True,
+            profile__daily_report=True,
+            profile__telegram_id__isnull=False,
+        ).select_related('profile')
+        context['candidates'] = User.objects.filter(is_active=True).order_by('username')
+        context['notifications'] = (
+            NotificationLog.objects.select_related('user')[:20]
+        )
+        context['actions'] = self.ACTIONS
+        # Вывод предыдущего запуска: кладём его в сессию, чтобы обновление
+        # страницы не запускало команду заново
+        context['output'] = self.request.session.pop('command_output', None)
+        return context
+
+    def post(self, request, *args, **kwargs):
+        action = request.POST.get('action')
+        if action not in self.ACTIONS:
+            messages.error(request, 'Неизвестное действие.')
+            return redirect('maintenance')
+
+        title, options = self.ACTIONS[action]
+        username = request.POST.get('username') or None
+        if username:
+            options = {**options, 'user': username}
+
+        buffer = StringIO()
+        try:
+            call_command('senddigest', stdout=buffer, stderr=buffer, **options)
+            text = buffer.getvalue().strip() or 'Команда отработала без вывода.'
+        except Exception as error:
+            # Ошибку показываем на странице: лезть в консоль сервера ради неё не нужно
+            text = f'Ошибка: {error}'
+
+        request.session['command_output'] = {
+            'title': title,
+            'command': self.as_command_line(action, username),
+            'text': text,
+        }
+        return redirect('maintenance')
+
+    @staticmethod
+    def as_command_line(action, username):
+        """Та же команда для консоли — чтобы её можно было поставить в расписание."""
+        flags = {'status': ' --status', 'dry_run': ' --dry-run', 'force': ' --force', 'send': ''}
+        user_flag = f' --user {username}' if username else ''
+        return f'python manage.py senddigest{flags[action]}{user_flag}'
