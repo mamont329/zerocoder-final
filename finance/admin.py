@@ -5,8 +5,8 @@ from .models import Category, Transaction
 
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
-    list_display = ('name', 'user', 'monthly_limit')
-    list_filter = ('user',)
+    list_display = ('name', 'type', 'user', 'monthly_limit')
+    list_filter = ('type', 'user')
     search_fields = ('name',)
 
 
