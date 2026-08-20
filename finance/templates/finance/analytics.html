@@ -41,6 +41,48 @@
   </div>
 </div>
 
+{% if comparison %}
+  <div class="card mb-3">
+    <div class="card-body">
+      <h2 class="h5 mb-1">Сравнение с предыдущим периодом</h2>
+      <p class="text-muted small">Предыдущий период: {{ previous_label }}</p>
+
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead>
+            <tr class="text-muted small text-uppercase">
+              <th></th>
+              <th class="text-end">Сейчас</th>
+              <th class="text-end">Было</th>
+              <th class="text-end">Изменение</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in comparison %}
+              <tr>
+                <td>{{ row.title }}</td>
+                <td class="text-end fw-semibold">{{ row.current|floatformat:2 }} ₽</td>
+                <td class="text-end text-muted">{{ row.previous|floatformat:2 }} ₽</td>
+                <td class="text-end">
+                  {% if row.changed %}
+                    <span class="{% if row.good %}amount-income{% else %}amount-expense{% endif %}">
+                      {% if row.grew %}▲{% else %}▼{% endif %}
+                      {{ row.difference|floatformat:2 }} ₽
+                      {% if row.percent %}<span class="small">({{ row.percent|floatformat:0 }} %)</span>{% endif %}
+                    </span>
+                  {% else %}
+                    <span class="text-muted">без изменений</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+{% endif %}
+
 {% if advice %}
   <div class="row g-3 mb-3">
     {% for item in advice %}

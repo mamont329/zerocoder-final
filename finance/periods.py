@@ -45,6 +45,31 @@ def period_range(period, today=None):
     return None, None
 
 
+def previous_bounds(start, end, period=None):
+    """Границы предыдущего периода такой же длины — для сравнения «стало / было».
+
+    Месяц и год сдвигаются календарно: в них разное число дней, и вычитание
+    фиксированных 30 или 365 дней дало бы кривые границы. Остальные периоды,
+    включая произвольный, сдвигаются на собственную длину.
+    """
+    if not start or not end:
+        return None, None
+
+    if period == MONTH:
+        previous_end = start - timedelta(days=1)
+        return previous_end.replace(day=1), previous_end
+    if period == YEAR:
+        return date(start.year - 1, 1, 1), date(start.year - 1, 12, 31)
+
+    span = (end - start).days + 1
+    return start - timedelta(days=span), start - timedelta(days=1)
+
+
+def previous_range(period, today=None):
+    """Предыдущий период для одного из именованных периодов."""
+    return previous_bounds(*period_range(period, today), period=period)
+
+
 def _end_of_month(first_day):
     """Последний день месяца, которому принадлежит first_day."""
     if first_day.month == 12:

@@ -3,7 +3,7 @@ from django.contrib.auth.forms import UserCreationForm
 from django.contrib.auth.models import User
 
 from . import periods
-from .models import Category, OperationType, Transaction
+from .models import Category, OperationType, Profile, Transaction
 
 CONTROL = {'class': 'form-control'}
 SELECT = {'class': 'form-select'}
@@ -78,12 +78,16 @@ class CategoryForm(UserOwnedFormMixin, forms.ModelForm):
         }
 
     def clean_name(self):
-        """Своё сообщение вместо ошибки базы: имена категорий уникальны в пределах пользователя."""
+        """Своё сообщение вместо ошибки базы: имена категорий уникальны в пределах пользователя.
+
+        Сравниваем в Python: SQLite приводит регистр только для латиницы,
+        поэтому запрос с iexact пропустил бы пару «Еда» и «еда».
+        """
         name = self.cleaned_data['name'].strip()
-        duplicates = Category.objects.filter(user=self.user, name__iexact=name)
+        existing = Category.objects.filter(user=self.user)
         if self.instance.pk:
-            duplicates = duplicates.exclude(pk=self.instance.pk)
-        if duplicates.exists():
+            existing = existing.exclude(pk=self.instance.pk)
+        if any(other.name.casefold() == name.casefold() for other in existing):
             raise forms.ValidationError('Категория с таким названием уже есть.')
         return name
 
@@ -140,3 +144,12 @@ class TransactionFilterForm(forms.Form):
         if period == periods.CUSTOM:
             return data.get('date_from'), data.get('date_to')
         return periods.period_range(period)
+
+
+class ProfileForm(forms.ModelForm):
+    """Настройки уведомлений. Telegram ID и код правятся только ботом."""
+
+    class Meta:
+        model = Profile
+        fields = ('daily_report',)
+        widgets = {'daily_report': forms.CheckboxInput(attrs={'class': 'form-check-input'})}

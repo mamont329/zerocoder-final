@@ -1,16 +1,18 @@
+import os
 from decimal import Decimal
 
 from django.contrib import messages
 from django.contrib.auth import login
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db.models import ProtectedError, Sum
+from django.db.models import Max, Min, ProtectedError, Sum
 from django.shortcuts import redirect
 from django.urls import reverse_lazy
+from django.views import View
 from django.views.generic import CreateView, DeleteView, ListView, TemplateView, UpdateView
 
 from . import analytics, charts, periods
 from .analytics import totals
-from .forms import CategoryForm, SignUpForm, TransactionFilterForm, TransactionForm
+from .forms import CategoryForm, ProfileForm, SignUpForm, TransactionFilterForm, TransactionForm
 from .models import Category, OperationType, Transaction
 
 ZERO = Decimal('0.00')
@@ -20,13 +22,17 @@ ZERO = Decimal('0.00')
 MONTHLY_THRESHOLD_DAYS = 70
 
 
-def apply_filters(queryset, form):
-    """Сужает выборку по данным формы фильтра. Общее для списка и аналитики."""
+def apply_filters(queryset, form, bounds=None):
+    """Сужает выборку по данным формы фильтра. Общее для списка и аналитики.
+
+    bounds позволяет подставить свои границы дат, оставив остальные условия
+    формы: так выборка за прошлый период учитывает выбранные тип и категорию.
+    """
     if not form.is_valid():
         return queryset
 
     data = form.cleaned_data
-    start, end = form.range()
+    start, end = bounds if bounds is not None else form.range()
     if start:
         queryset = queryset.filter(date__gte=start)
     if end:
@@ -167,13 +173,32 @@ class AnalyticsView(FilteredTransactionsMixin, TemplateView):
         start, end = self.get_period()
         queryset = apply_filters(user.transactions.all(), self.get_filter_form())
 
+        # «Всё время» и открытый произвольный период не задают границ — берём их
+        # из самих данных. Иначе длину периода не вычислить, и график по ошибке
+        # сворачивался в одну месячную точку.
+        edges = queryset.aggregate(first=Min('date'), last=Max('date'))
+        chart_start = start or edges['first']
+        chart_end = end or edges['last']
+
         # Длинный период рисуем по месяцам, короткий — по дням
-        span = (end - start).days if start and end else None
-        by_month = span is None or span >= MONTHLY_THRESHOLD_DAYS
-        frame = analytics.timeline(queryset, start, end, freq='ME' if by_month else 'D')
+        span = (chart_end - chart_start).days if chart_start and chart_end else 0
+        by_month = span >= MONTHLY_THRESHOLD_DAYS
+        frame = analytics.timeline(queryset, chart_start, chart_end, freq='ME' if by_month else 'D')
+
+        # Сравнение с предыдущим периодом такой же длины
+        period = self.get_filter_form().cleaned_data.get('period') if self.get_filter_form().is_valid() else None
+        previous_bounds = periods.previous_bounds(chart_start, chart_end, period)
+        comparison = None
+        # У «всего времени» предыдущего периода нет по определению: до первой
+        # операции сравнивать не с чем, вышло бы «было 0» на каждой строке
+        if period != periods.ALL and previous_bounds[0]:
+            previous = apply_filters(user.transactions.all(), self.get_filter_form(), previous_bounds)
+            comparison = analytics.compare(queryset, previous)
 
         categories = analytics.expenses_by_category(queryset)
         context.update({
+            'comparison': comparison,
+            'previous_label': periods.period_label(period, *previous_bounds),
             'totals': totals(queryset),
             'categories': categories,
             'limits': analytics.limit_usage(user),
@@ -283,3 +308,33 @@ class CategoryDeleteView(OwnedQuerysetMixin, DeleteView):
             return redirect('category_list')
         messages.success(self.request, 'Категория удалена.')
         return response
+
+
+class ProfileView(LoginRequiredMixin, UpdateView):
+    """Профиль: привязка Telegram и настройки уведомлений."""
+
+    form_class = ProfileForm
+    template_name = 'finance/profile.html'
+    success_url = reverse_lazy('profile')
+
+    def get_object(self, queryset=None):
+        return self.request.user.profile
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['profile'] = self.object
+        context['bot_username'] = os.getenv('TELEGRAM_BOT_USERNAME', '')
+        return context
+
+    def form_valid(self, form):
+        messages.success(self.request, 'Настройки сохранены.')
+        return super().form_valid(form)
+
+
+class TelegramUnlinkView(LoginRequiredMixin, View):
+    """Отвязка Telegram из кабинета."""
+
+    def post(self, request, *args, **kwargs):
+        request.user.profile.unlink()
+        messages.success(request, 'Telegram отвязан, код привязки обновлён.')
+        return redirect('profile')

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Category, Transaction
+from .models import Category, Profile, Transaction
 
 
 @admin.register(Category)
@@ -16,3 +16,10 @@ class TransactionAdmin(admin.ModelAdmin):
     list_filter = ('type', 'date', 'category')
     search_fields = ('description',)
     date_hierarchy = 'date'
+
+
+@admin.register(Profile)
+class ProfileAdmin(admin.ModelAdmin):
+    list_display = ('user', 'telegram_id', 'daily_report')
+    list_filter = ('daily_report',)
+    readonly_fields = ('link_code',)

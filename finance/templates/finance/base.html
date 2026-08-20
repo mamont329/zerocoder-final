@@ -35,7 +35,7 @@
         </ul>
         <div class="d-flex align-items-center gap-3">
           <a class="btn btn-primary btn-sm" href="{% url 'transaction_add' %}">Добавить операцию</a>
-          <span class="navbar-text">{{ user.username }}</span>
+          <a class="navbar-text text-decoration-none link-light" href="{% url 'profile' %}">{{ user.username }}</a>
           <form method="post" action="{% url 'logout' %}" class="m-0">
             {% csrf_token %}
             <button type="submit" class="btn btn-outline-light btn-sm">Выйти</button>

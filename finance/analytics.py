@@ -78,6 +78,40 @@ def expenses_by_category(queryset):
     ]
 
 
+def compare(current_queryset, previous_queryset):
+    """Сопоставляет итоги двух периодов: сколько было, сколько стало, насколько.
+
+    Рост расходов — плохо, рост доходов — хорошо, поэтому «хорошесть» изменения
+    считается здесь, а не в шаблоне: там это превратилось бы в условия на условиях.
+    """
+    current = totals(current_queryset)
+    previous = totals(previous_queryset)
+
+    rows = []
+    for key, title, growth_is_good in (
+        ('income', 'Доходы', True),
+        ('expense', 'Расходы', False),
+        ('balance', 'Баланс', True),
+    ):
+        now, before = current[key], previous[key]
+        difference = now - before
+        # Процент считается от прошлого значения. От нуля он не определён,
+        # а от отрицательного (баланс в минусе) — бессмыслен: рост на «490%»
+        # от минус десяти тысяч ничего не сообщает.
+        percent = float(difference / before * 100) if before > ZERO else None
+        rows.append({
+            'title': title,
+            'current': now,
+            'previous': before,
+            'difference': difference,
+            'percent': abs(percent) if percent is not None else None,
+            'grew': difference > ZERO,
+            'changed': difference != ZERO,
+            'good': (difference > ZERO) == growth_is_good if difference != ZERO else None,
+        })
+    return rows
+
+
 def timeline(queryset, start, end, freq='D'):
     """Ряды доходов и расходов по времени без пропусков в датах.
 

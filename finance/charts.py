@@ -39,12 +39,22 @@ def _to_html(figure):
     return figure.to_html(full_html=False, include_plotlyjs=False, config=CONFIG)
 
 
+def _time_axis(by_month):
+    """Ось времени: по месяцам или по дням.
+
+    dtick привязывает отметки к месяцам — без него на коротком отрезке
+    plotly ставит несколько подписей внутри одного месяца, и они повторяются.
+    """
+    axis = {'showgrid': False, 'linecolor': GRID_COLOR}
+    if by_month:
+        return {**axis, 'tickformat': '%m.%Y', 'dtick': 'M1'}
+    return {**axis, 'tickformat': '%d.%m'}
+
+
 def timeline_chart(frame, by_month=False):
     """Динамика доходов и расходов по времени."""
     if frame.empty:
         return None
-
-    axis_format = '%m.%Y' if by_month else '%d.%m'
     figure = go.Figure()
     for column, name, color in (
         ('income', 'Доходы', INCOME_COLOR),
@@ -63,7 +73,7 @@ def timeline_chart(frame, by_month=False):
     figure.update_layout(
         **LAYOUT,
         legend={'orientation': 'h', 'yanchor': 'bottom', 'y': 1.02, 'x': 0, 'title': None},
-        xaxis={'showgrid': False, 'linecolor': GRID_COLOR, 'tickformat': axis_format},
+        xaxis=_time_axis(by_month),
         yaxis={'gridcolor': GRID_COLOR, 'zeroline': False, 'ticksuffix': ' ₽', 'tickformat': ',.0f'},
     )
     return _to_html(figure)
@@ -79,7 +89,6 @@ def cumulative_chart(frame, by_month=False):
         return None
 
     cumulative = frame.cumsum()
-    axis_format = '%m.%Y' if by_month else '%d.%m'
 
     figure = go.Figure()
     for column, name, color in (
@@ -111,7 +120,7 @@ def cumulative_chart(frame, by_month=False):
     figure.update_layout(
         **LAYOUT,
         legend={'orientation': 'h', 'yanchor': 'bottom', 'y': 1.02, 'x': 0, 'title': None},
-        xaxis={'showgrid': False, 'linecolor': GRID_COLOR, 'tickformat': axis_format},
+        xaxis=_time_axis(by_month),
         yaxis={'gridcolor': GRID_COLOR, 'zeroline': False, 'ticksuffix': ' ₽', 'tickformat': ',.0f'},
     )
     return _to_html(figure)

@@ -2,7 +2,14 @@ from django.conf import settings
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
-from .models import DEFAULT_CATEGORIES, Category
+from .models import DEFAULT_CATEGORIES, Category, Profile
+
+
+@receiver(post_save, sender=settings.AUTH_USER_MODEL)
+def create_profile(sender, instance, created, **kwargs):
+    """Профиль есть у каждого пользователя — иначе некуда класть код привязки."""
+    if created:
+        Profile.objects.get_or_create(user=instance)
 
 
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)

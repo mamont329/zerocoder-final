@@ -1,3 +1,5 @@
+import secrets
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
@@ -121,3 +123,60 @@ class Transaction(models.Model):
                 'category': f'Категория «{self.category}» предназначена для операций '
                             f'типа «{self.category.get_type_display()}».'
             })
+
+
+class Profile(models.Model):
+    """Настройки пользователя и его связь с Telegram.
+
+    Создаётся вместе с пользователем. Привязка к чату происходит по коду:
+    пользователь берёт код в кабинете и отправляет боту командой /start.
+    """
+
+    CODE_LENGTH = 6
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='profile',
+        verbose_name='Пользователь',
+    )
+    telegram_id = models.BigIntegerField(
+        'Telegram ID',
+        null=True,
+        blank=True,
+        unique=True,
+        help_text='Идентификатор чата, куда бот шлёт отчёты',
+    )
+    link_code = models.CharField('Код привязки', max_length=12, unique=True)
+    daily_report = models.BooleanField(
+        'Ежедневный отчёт',
+        default=True,
+        help_text='Присылать сводку за день в Telegram',
+    )
+
+    class Meta:
+        verbose_name = 'профиль'
+        verbose_name_plural = 'профили'
+
+    def __str__(self):
+        return f'Профиль {self.user}'
+
+    @staticmethod
+    def generate_code():
+        """Код привязки: короткий, но неугадываемый — по нему бот находит аккаунт."""
+        return secrets.token_hex(Profile.CODE_LENGTH // 2).upper()
+
+    def save(self, *args, **kwargs):
+        if not self.link_code:
+            self.link_code = self.generate_code()
+        super().save(*args, **kwargs)
+
+    @property
+    def is_linked(self):
+        return self.telegram_id is not None
+
+    def unlink(self):
+        """Отвязывает Telegram и выдаёт новый код: старый мог остаться в чужой переписке."""
+        self.telegram_id = None
+        self.link_code = self.generate_code()
+        self.save(update_fields=['telegram_id', 'link_code'])

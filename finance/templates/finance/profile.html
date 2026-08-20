@@ -1,0 +1,70 @@
+{% extends 'finance/base.html' %}
+
+{% block title %}Профиль — FinControl{% endblock %}
+
+{% block content %}
+<h1 class="h3 mb-3">Профиль</h1>
+
+<div class="row g-3">
+  <div class="col-lg-7">
+    <div class="card h-100">
+      <div class="card-body">
+        <h2 class="h5 mb-3">Telegram-бот</h2>
+
+        {% if profile.is_linked %}
+          <p class="mb-2">
+            <span class="badge text-bg-success">Привязан</span>
+            <span class="text-muted small ms-2">ID чата: {{ profile.telegram_id }}</span>
+          </p>
+          <p class="text-muted">
+            Бот присылает отчёты и принимает команды <code>/today</code>, <code>/week</code>,
+            <code>/month</code>, <code>/category</code>.
+          </p>
+          <form method="post" action="{% url 'telegram_unlink' %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-danger btn-sm">Отвязать Telegram</button>
+          </form>
+        {% else %}
+          <p><span class="badge text-bg-secondary">Не привязан</span></p>
+          <ol class="text-muted">
+            <li>Откройте бота{% if bot_username %} <a href="https://t.me/{{ bot_username }}">@{{ bot_username }}</a>{% endif %} в Telegram.</li>
+            <li>Отправьте ему команду с этим кодом:</li>
+          </ol>
+          <div class="bg-light border rounded p-3 mb-2">
+            <code class="fs-5">/start {{ profile.link_code }}</code>
+          </div>
+          <p class="text-muted small mb-0">
+            Код одноразовый по смыслу: после отвязки чата он меняется.
+          </p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card h-100">
+      <div class="card-body">
+        <h2 class="h5 mb-3">Уведомления</h2>
+        <form method="post">
+          {% csrf_token %}
+          <div class="form-check mb-3">
+            {{ form.daily_report }}
+            <label class="form-check-label" for="{{ form.daily_report.id_for_label }}">
+              {{ form.daily_report.label }}
+            </label>
+            <div class="form-text">{{ form.daily_report.help_text }}</div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-sm">Сохранить</button>
+        </form>
+
+        <hr class="my-4">
+        <h2 class="h6">Аккаунт</h2>
+        <p class="text-muted small mb-0">
+          Пользователь: <strong>{{ user.username }}</strong><br>
+          {% if user.email %}Почта: {{ user.email }}{% else %}Почта не указана{% endif %}
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
