@@ -121,7 +121,13 @@ class Command(BaseCommand):
 
     def show_status(self, recipients):
         """Что и когда уходило — чтобы проверить, отработало ли расписание."""
-        self.stdout.write('Получатели ежедневной сводки:')
+        if not recipients:
+            self.stdout.write(self.style.WARNING(
+                'Получателей нет: нужен привязанный Telegram и включённый '
+                '«Ежедневный отчёт» в профиле.'
+            ))
+        else:
+            self.stdout.write('Получатели ежедневной сводки:')
         for user in recipients:
             last = user.notifications.filter(kind=NotificationLog.Kind.DIGEST).first()
             when = f'{timezone.localtime(last.sent_at):%d.%m.%Y %H:%M}' if last else 'ещё не отправлялась'
