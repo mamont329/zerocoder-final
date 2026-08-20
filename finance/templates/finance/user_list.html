@@ -1,0 +1,88 @@
+{% extends 'finance/base.html' %}
+
+{% block title %}Пользователи — FinControl{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h1 class="h3 mb-0">Пользователи</h1>
+    <span class="text-muted">Раздел виден только персоналу сервиса</span>
+  </div>
+  <a href="{% url 'user_add' %}" class="btn btn-primary" data-bs-toggle="tooltip"
+     title="Завести учётную запись: пароль сгенерируется автоматически">Создать</a>
+</div>
+
+<div class="card">
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table align-middle mb-0">
+        <thead>
+          <tr class="text-muted small text-uppercase">
+            <th>Пользователь</th><th>Почта</th><th>Статус</th>
+            <th class="text-end">Операций</th><th>Последний вход</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in users %}
+            <tr class="{% if not item.is_active %}text-muted{% endif %}">
+              <td>
+                <span class="fw-semibold">{{ item.username }}</span>
+                {% if item.is_staff %}<span class="badge text-bg-info ms-1" data-bs-toggle="tooltip"
+                  title="Сотрудник сервиса: видит этот раздел, заводит и отключает учётные записи">персонал</span>{% endif %}
+                {% if item == user %}<span class="badge text-bg-light ms-1">это вы</span>{% endif %}
+                {% if item.profile.full_name %}<div class="small text-muted">{{ item.profile.full_name }}</div>{% endif %}
+              </td>
+              <td class="text-muted">{{ item.email|default:"—" }}</td>
+              <td>
+                {% if item.is_active %}
+                  <span class="badge text-bg-success" data-bs-toggle="tooltip"
+                        title="Может входить в кабинет и пользоваться ботом">активен</span>
+                {% else %}
+                  <span class="badge text-bg-secondary" data-bs-toggle="tooltip"
+                        title="Вход и бот закрыты, данные сохранены">отключён</span>
+                {% endif %}
+              </td>
+              <td class="text-end">{{ item.operations }}</td>
+              <td class="text-muted small">
+                {% if item.last_login %}{{ item.last_login|date:"d.m.Y H:i" }}{% else %}не входил{% endif %}
+              </td>
+              <td class="text-end text-nowrap">
+                {% if item != user %}
+                  <form method="post" action="{% url 'user_toggle' item.pk %}" class="d-inline">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-outline-secondary"
+                            data-bs-toggle="tooltip"
+                            title="{% if item.is_active %}Закрыть вход и бота, данные сохранить{% else %}Вернуть доступ к сервису{% endif %}">
+                      {% if item.is_active %}Отключить{% else %}Включить{% endif %}
+                    </button>
+                  </form>
+                  <a href="{% url 'user_reset_password' item.pk %}" class="btn btn-sm btn-outline-secondary"
+                     data-bs-toggle="tooltip"
+                     title="Выдать новый временный пароль и отправить его выбранными каналами">Сбросить пароль</a>
+                  <a href="{% url 'user_delete' item.pk %}" class="btn btn-sm btn-outline-danger"
+                     data-bs-toggle="tooltip"
+                     title="Удалить учётную запись вместе со всеми операциями и категориями">Удалить</a>
+                {% else %}
+                  <a href="{% url 'password_change' %}" class="btn btn-sm btn-outline-secondary"
+                     data-bs-toggle="tooltip"
+                     title="Над собой действия недоступны — сменить можно только пароль">Сменить пароль</a>
+                {% endif %}
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="6" class="text-muted">Пользователей нет.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if is_paginated %}{% include 'finance/_pagination.html' %}{% endif %}
+  </div>
+</div>
+
+<p class="text-muted small mt-3">
+  Отключение сохраняет данные и закрывает вход вместе с Telegram-ботом.
+  Удаление уносит операции и категории пользователя безвозвратно.
+  Сброс пароля выдаёт временный пароль: пользователь обязан сменить его при входе.
+</p>
+{% endblock %}

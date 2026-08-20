@@ -1,0 +1,47 @@
+{% extends 'finance/base.html' %}
+
+{% block title %}{{ title }} — FinControl{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-6">
+    <div class="card">
+      <div class="card-body p-4">
+        <h1 class="h4 mb-1">{{ title }}</h1>
+        <p class="text-muted">
+          Пароль придумывать не нужно: система создаст временный, покажет его один раз
+          и отправит пользователю на почту и в Telegram, если они известны.
+        </p>
+
+        <form method="post" novalidate>
+          {% csrf_token %}
+          {% for field in form %}
+            {% if field.name == 'is_staff' %}
+              <div class="form-check mb-3">
+                {{ field }}
+                <label class="form-check-label" for="{{ field.id_for_label }}"
+                       data-bs-toggle="tooltip" title="{{ field.help_text }}">{{ field.label }}</label>
+                <div class="form-text">{{ field.help_text }}</div>
+              </div>
+            {% else %}
+              <div class="mb-3">
+                <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {{ field }}
+                {% if field.help_text %}<div class="form-text">{{ field.help_text|safe }}</div>{% endif %}
+                {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+              </div>
+            {% endif %}
+          {% endfor %}
+
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary" data-bs-toggle="tooltip"
+                    title="Создать учётную запись и показать временный пароль">{{ submit }}</button>
+            <a href="{% url 'user_list' %}" class="btn btn-outline-secondary"
+               data-bs-toggle="tooltip" title="Вернуться, ничего не создавая">Отмена</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

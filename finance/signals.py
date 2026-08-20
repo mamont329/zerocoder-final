@@ -25,3 +25,4 @@ def create_default_categories(sender, instance, created, **kwargs):
         [Category(user=instance, name=name, type=type_) for name, type_ in DEFAULT_CATEGORIES],
         ignore_conflicts=True,
     )
+

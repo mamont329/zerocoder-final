@@ -16,8 +16,15 @@ from ..models import Category, OperationType, Profile, Transaction
 
 @sync_to_async
 def get_user(telegram_id):
-    """Пользователь, привязавший этот чат. None — если привязки нет."""
-    profile = Profile.objects.filter(telegram_id=telegram_id).select_related('user').first()
+    """Пользователь, привязавший этот чат.
+
+    None — если привязки нет или аккаунт отключён: отключение должно закрывать
+    доступ везде, а не только на сайте.
+    """
+    profile = (
+        Profile.objects.filter(telegram_id=telegram_id, user__is_active=True)
+        .select_related('user').first()
+    )
     return profile.user if profile else None
 
 
@@ -27,7 +34,10 @@ def link_account(telegram_id, code):
 
     Возвращает пользователя или None, если код не подошёл.
     """
-    profile = Profile.objects.filter(link_code__iexact=code.strip()).select_related('user').first()
+    profile = (
+        Profile.objects.filter(link_code__iexact=code.strip(), user__is_active=True)
+        .select_related('user').first()
+    )
     if profile is None:
         return None
 

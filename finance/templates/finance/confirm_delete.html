@@ -13,7 +13,8 @@
         <form method="post">
           {% csrf_token %}
           <div class="d-flex gap-2">
-            <button type="submit" class="btn btn-danger">Удалить</button>
+            <button type="submit" class="btn btn-danger" data-bs-toggle="tooltip"
+                    title="Действие необратимо">Удалить</button>
             <a href="{{ view.success_url }}" class="btn btn-outline-secondary">Отмена</a>
           </div>
         </form>

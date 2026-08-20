@@ -8,7 +8,8 @@
     <h1 class="h3 mb-0">Операции</h1>
     <span class="text-muted">{{ period_label }}</span>
   </div>
-  <a href="{% url 'transaction_add' %}" class="btn btn-primary">Добавить</a>
+  <a href="{% url 'transaction_add' %}" class="btn btn-primary"
+     data-bs-toggle="tooltip" title="Записать новый доход или расход">Добавить</a>
 </div>
 
 {% include 'finance/_filter_form.html' %}
@@ -62,8 +63,10 @@
                   {% if t.type == 'income' %}+{% else %}−{% endif %}{{ t.amount|floatformat:2 }} ₽
                 </td>
                 <td class="text-end text-nowrap">
-                  <a href="{% url 'transaction_edit' t.pk %}" class="btn btn-sm btn-outline-secondary">Изменить</a>
-                  <a href="{% url 'transaction_delete' t.pk %}" class="btn btn-sm btn-outline-danger">Удалить</a>
+                  <a href="{% url 'transaction_edit' t.pk %}" class="btn btn-sm btn-outline-secondary"
+                     data-bs-toggle="tooltip" title="Изменить сумму, дату, категорию или описание">Изменить</a>
+                  <a href="{% url 'transaction_delete' t.pk %}" class="btn btn-sm btn-outline-danger"
+                     data-bs-toggle="tooltip" title="Удалить операцию безвозвратно">Удалить</a>
                 </td>
               </tr>
             {% endfor %}

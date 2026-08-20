@@ -22,7 +22,11 @@
           </p>
           <form method="post" action="{% url 'telegram_unlink' %}">
             {% csrf_token %}
-            <button type="submit" class="btn btn-outline-danger btn-sm">Отвязать Telegram</button>
+            <button type="submit" class="btn btn-outline-danger btn-sm"
+                    data-bs-toggle="tooltip"
+                    title="Бот перестанет отвечать и слать отчёты, код привязки сменится">
+              Отвязать Telegram
+            </button>
           </form>
         {% else %}
           <p><span class="badge text-bg-secondary">Не привязан</span></p>
@@ -54,15 +58,38 @@
             </label>
             <div class="form-text">{{ form.daily_report.help_text }}</div>
           </div>
-          <button type="submit" class="btn btn-primary btn-sm">Сохранить</button>
+          <button type="submit" class="btn btn-primary btn-sm"
+                  data-bs-toggle="tooltip" title="Сохранить настройки уведомлений">Сохранить</button>
         </form>
 
         <hr class="my-4">
         <h2 class="h6">Аккаунт</h2>
-        <p class="text-muted small mb-0">
+        <p class="text-muted small">
           Пользователь: <strong>{{ user.username }}</strong><br>
+          {% if profile.full_name %}ФИО: {{ profile.full_name }}<br>{% endif %}
           {% if user.email %}Почта: {{ user.email }}{% else %}Почта не указана{% endif %}
         </p>
+        <div class="d-flex flex-wrap gap-2">
+          <a href="{% url 'account_edit' %}" class="btn btn-outline-secondary btn-sm"
+             data-bs-toggle="tooltip" title="Логин, ФИО и почта">Изменить данные</a>
+          <a href="{% url 'password_change' %}" class="btn btn-outline-secondary btn-sm"
+             data-bs-toggle="tooltip" title="Задать новый пароль, зная текущий">Сменить пароль</a>
+
+          {% if is_last_staff %}
+            {# Отключённая кнопка не получает событий мыши, поэтому подсказка живёт на обёртке #}
+            <span class="d-inline-block" data-bs-toggle="tooltip"
+                  title="Вы единственный сотрудник с доступом к управлению пользователями. Отключив себя, вы лишите сервис администратора: включить учётные записи обратно будет некому. Сначала назначьте другого сотрудника в разделе «Пользователи».">
+              <button type="button" class="btn btn-outline-danger btn-sm" disabled
+                      style="pointer-events: none;">Отключить аккаунт</button>
+            </span>
+          {% else %}
+            <a href="{% url 'account_deactivate' %}" class="btn btn-outline-danger btn-sm"
+               data-bs-toggle="tooltip"
+               title="Закрыть себе вход и работу бота. Операции и категории сохранятся, включить обратно сможет сотрудник">
+              Отключить аккаунт
+            </a>
+          {% endif %}
+        </div>
       </div>
     </div>
   </div>

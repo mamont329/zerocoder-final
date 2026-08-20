@@ -1,21 +1,16 @@
 {% extends 'finance/base.html' %}
 
-{% block title %}{{ title }} — FinControl{% endblock %}
+{% block title %}Данные аккаунта — FinControl{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
-  <div class="col-lg-5">
+  <div class="col-lg-6">
     <div class="card">
       <div class="card-body p-4">
-        <h1 class="h4 mb-4">{{ title }}</h1>
+        <h1 class="h4 mb-4">Данные аккаунта</h1>
 
         <form method="post" novalidate>
           {% csrf_token %}
-
-          {% for error in form.non_field_errors %}
-            <div class="alert alert-danger">{{ error }}</div>
-          {% endfor %}
-
           {% for field in form %}
             <div class="mb-3">
               <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
@@ -27,9 +22,9 @@
 
           <div class="d-flex gap-2">
             <button type="submit" class="btn btn-primary" data-bs-toggle="tooltip"
-                    title="Сохранить категорию">{{ submit }}</button>
-            <a href="{% url 'category_list' %}" class="btn btn-outline-secondary"
-               data-bs-toggle="tooltip" title="Вернуться, не сохраняя">Отмена</a>
+                    title="Сохранить данные учётной записи">Сохранить</button>
+            <a href="{% url 'profile' %}" class="btn btn-outline-secondary"
+               data-bs-toggle="tooltip" title="Вернуться в профиль без изменений">Отмена</a>
           </div>
         </form>
       </div>

@@ -44,7 +44,10 @@
 {% if comparison %}
   <div class="card mb-3">
     <div class="card-body">
-      <h2 class="h5 mb-1">Сравнение с предыдущим периодом</h2>
+      <h2 class="h5 mb-1" data-bs-toggle="tooltip"
+          title="Предыдущий период той же длины: месяц с месяцем, неделя с неделей">
+        Сравнение с предыдущим периодом
+      </h2>
       <p class="text-muted small">Предыдущий период: {{ previous_label }}</p>
 
       <div class="table-responsive">
@@ -98,7 +101,8 @@
 
 <div class="card mb-3">
   <div class="card-body">
-    <h2 class="h5 mb-3">Доходы и расходы во времени</h2>
+    <h2 class="h5 mb-3" data-bs-toggle="tooltip"
+        title="Суммы по дням; на длинных периодах — по месяцам">Доходы и расходы во времени</h2>
     {% if timeline_chart %}
       {{ timeline_chart|safe }}
     {% else %}
@@ -109,7 +113,8 @@
 
 <div class="card mb-3">
   <div class="card-body">
-    <h2 class="h5 mb-1">Нарастающий итог</h2>
+    <h2 class="h5 mb-1" data-bs-toggle="tooltip"
+        title="Расстояние между линиями справа — баланс периода">Нарастающий итог</h2>
     <p class="text-muted small">Сколько получено и потрачено с начала периода — накопленным итогом.</p>
     {% if cumulative_chart %}
       {{ cumulative_chart|safe }}
@@ -123,7 +128,8 @@
   <div class="col-lg-6">
     <div class="card h-100">
       <div class="card-body">
-        <h2 class="h5 mb-3">Структура расходов</h2>
+        <h2 class="h5 mb-3" data-bs-toggle="tooltip"
+            title="Пять крупнейших категорий, остальные свёрнуты в «Прочее»">Структура расходов</h2>
         {% if category_chart %}
           {{ category_chart|safe }}
         {% else %}
@@ -166,7 +172,8 @@
 
 <div class="card">
   <div class="card-body">
-    <h2 class="h5 mb-1">Лимиты по категориям</h2>
+    <h2 class="h5 mb-1" data-bs-toggle="tooltip"
+        title="Лимит задаётся при редактировании категории">Лимиты по категориям</h2>
     <p class="text-muted small">Всегда за текущий месяц — лимит месячный и от выбранного периода не зависит.</p>
     {% if limits %}
       {% for item in limits %}

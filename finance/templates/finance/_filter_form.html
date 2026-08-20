@@ -26,7 +26,8 @@
         {{ filter_form.category }}
       </div>
       <div class="col-md-1 d-grid">
-        <button type="submit" class="btn btn-outline-secondary">Найти</button>
+        <button type="submit" class="btn btn-outline-secondary"
+                data-bs-toggle="tooltip" title="Применить выбранные фильтры">Найти</button>
       </div>
       {% if filter_form.non_field_errors %}
         <div class="col-12"><div class="text-danger small">{{ filter_form.non_field_errors.0 }}</div></div>

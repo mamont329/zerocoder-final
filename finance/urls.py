@@ -14,6 +14,15 @@ urlpatterns = [
 
     path('profile/', views.ProfileView.as_view(), name='profile'),
     path('profile/telegram/unlink/', views.TelegramUnlinkView.as_view(), name='telegram_unlink'),
+    path('profile/account/', views.AccountUpdateView.as_view(), name='account_edit'),
+    path('profile/deactivate/', views.AccountDeactivateView.as_view(), name='account_deactivate'),
+
+    path('users/', views.UserListView.as_view(), name='user_list'),
+    path('users/add/', views.UserCreateView.as_view(), name='user_add'),
+    path('users/<int:pk>/toggle/', views.UserToggleActiveView.as_view(), name='user_toggle'),
+    path('users/<int:pk>/reset-password/', views.UserResetPasswordView.as_view(), name='user_reset_password'),
+    path('users/credentials/', views.UserCredentialsView.as_view(), name='user_credentials'),
+    path('users/<int:pk>/delete/', views.UserDeleteView.as_view(), name='user_delete'),
 
     path('categories/', views.CategoryListView.as_view(), name='category_list'),
     path('categories/add/', views.CategoryCreateView.as_view(), name='category_add'),

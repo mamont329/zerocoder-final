@@ -52,6 +52,7 @@ MIDDLEWARE = [
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
+    'finance.middleware.ForcePasswordChangeMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
@@ -136,8 +137,12 @@ LOGOUT_REDIRECT_URL = 'login'
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
+# Почта не настроена: письма печатаются в консоль сервера. Для боевой работы
+# сюда прописывается SMTP, остальной код менять не потребуется.
 MAILERS = {
     'default': {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
 }
+
+DEFAULT_FROM_EMAIL = 'FinControl <noreply@fincontrol.local>'

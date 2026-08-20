@@ -30,7 +30,8 @@
   <div class="col-md-4">
     <div class="card h-100">
       <div class="card-body">
-        <div class="text-muted small text-uppercase">Баланс за месяц</div>
+        <div class="text-muted small text-uppercase" data-bs-toggle="tooltip"
+             title="Доходы минус расходы за текущий месяц">Баланс за месяц</div>
         <div class="stat-value {% if month.balance < 0 %}amount-expense{% else %}amount-income{% endif %}">
           {{ month.balance|floatformat:2 }} ₽
         </div>
@@ -46,7 +47,8 @@
       <div class="card-body">
         <div class="d-flex justify-content-between align-items-center mb-3">
           <h2 class="h5 mb-0">Последние операции</h2>
-          <a href="{% url 'transaction_list' %}" class="small">Вся история</a>
+          <a href="{% url 'transaction_list' %}" class="small" data-bs-toggle="tooltip"
+             title="Полный список операций с фильтрами">Вся история</a>
         </div>
 
         {% if recent %}
@@ -68,7 +70,8 @@
           </div>
         {% else %}
           <p class="text-muted mb-3">Операций пока нет.</p>
-          <a href="{% url 'transaction_add' %}" class="btn btn-primary btn-sm">Добавить первую операцию</a>
+          <a href="{% url 'transaction_add' %}" class="btn btn-primary btn-sm"
+             data-bs-toggle="tooltip" title="Записать доход или расход">Добавить первую операцию</a>
         {% endif %}
       </div>
     </div>

@@ -140,6 +140,17 @@ class Profile(models.Model):
         related_name='profile',
         verbose_name='Пользователь',
     )
+    middle_name = models.CharField(
+        'Отчество',
+        max_length=150,
+        blank=True,
+        help_text='В модели Django его нет, поэтому храним рядом с остальными настройками',
+    )
+    must_change_password = models.BooleanField(
+        'Требуется смена пароля',
+        default=False,
+        help_text='Ставится при заведении учётной записи и после сброса пароля',
+    )
     telegram_id = models.BigIntegerField(
         'Telegram ID',
         null=True,
@@ -175,8 +186,26 @@ class Profile(models.Model):
     def is_linked(self):
         return self.telegram_id is not None
 
+    @property
+    def full_name(self):
+        """Фамилия, имя и отчество — в привычном для документов порядке."""
+        parts = [self.user.last_name, self.user.first_name, self.middle_name]
+        return ' '.join(part for part in parts if part)
+
     def unlink(self):
         """Отвязывает Telegram и выдаёт новый код: старый мог остаться в чужой переписке."""
         self.telegram_id = None
         self.link_code = self.generate_code()
         self.save(update_fields=['telegram_id', 'link_code'])
+
+
+def purge_user(user):
+    """Удаляет пользователя вместе со всеми его данными.
+
+    Операции убираются первым шагом. Категории ушли бы каскадом вслед за
+    владельцем, но их держат операции с on_delete=PROTECT, а план удаления
+    Django строит до сигналов — то есть падает раньше, чем что-то можно
+    поправить обработчиком.
+    """
+    Transaction.objects.filter(user=user).delete()
+    user.delete()

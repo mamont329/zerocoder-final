@@ -2,18 +2,21 @@ import os
 from decimal import Decimal
 
 from django.contrib import messages
-from django.contrib.auth import login
-from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db.models import Max, Min, ProtectedError, Sum
-from django.shortcuts import redirect
+from django.contrib.auth import login, logout
+from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
+from django.contrib.auth.views import PasswordChangeView
+from django.contrib.auth.models import User
+from django.db.models import Count, Max, Min, ProtectedError, Sum
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse_lazy
 from django.views import View
 from django.views.generic import CreateView, DeleteView, ListView, TemplateView, UpdateView
 
-from . import analytics, charts, periods
+from . import accounts, analytics, charts, periods
 from .analytics import totals
-from .forms import CategoryForm, ProfileForm, SignUpForm, TransactionFilterForm, TransactionForm
-from .models import Category, OperationType, Transaction
+from .forms import (AccountForm, CategoryForm, ProfileForm, SignUpForm, SitePasswordChangeForm,
+                    TransactionFilterForm, TransactionForm, UserCreateForm)
+from .models import Category, OperationType, Transaction, purge_user
 
 ZERO = Decimal('0.00')
 
@@ -324,6 +327,7 @@ class ProfileView(LoginRequiredMixin, UpdateView):
         context = super().get_context_data(**kwargs)
         context['profile'] = self.object
         context['bot_username'] = os.getenv('TELEGRAM_BOT_USERNAME', '')
+        context['is_last_staff'] = is_last_active_staff(self.request.user)
         return context
 
     def form_valid(self, form):
@@ -338,3 +342,226 @@ class TelegramUnlinkView(LoginRequiredMixin, View):
         request.user.profile.unlink()
         messages.success(request, 'Telegram отвязан, код привязки обновлён.')
         return redirect('profile')
+
+
+class AccountUpdateView(LoginRequiredMixin, UpdateView):
+    """Редактирование своих учётных данных."""
+
+    form_class = AccountForm
+    template_name = 'finance/account_form.html'
+    success_url = reverse_lazy('profile')
+
+    def get_object(self, queryset=None):
+        return self.request.user
+
+    def form_valid(self, form):
+        messages.success(self.request, 'Данные аккаунта сохранены.')
+        return super().form_valid(form)
+
+
+def is_last_active_staff(user):
+    """Последний сотрудник с доступом к управлению пользователями.
+
+    Если он отключит себя, включить кого-либо обратно будет некому —
+    останется только консоль сервера.
+    """
+    if not user.is_staff:
+        return False
+    return not User.objects.filter(is_staff=True, is_active=True).exclude(pk=user.pk).exists()
+
+
+class AccountDeactivateView(LoginRequiredMixin, View):
+    """Отключение своей учётной записи.
+
+    Данные не стираются: аккаунт помечается неактивным, вход и бот перестают
+    работать. Безвозвратное удаление — только через раздел «Пользователи».
+    """
+
+    def dispatch(self, request, *args, **kwargs):
+        if request.user.is_authenticated and is_last_active_staff(request.user):
+            messages.error(
+                request,
+                'Вы единственный сотрудник с доступом к управлению пользователями — '
+                'отключить себя нельзя. Сначала назначьте другого сотрудника.',
+            )
+            return redirect('profile')
+        return super().dispatch(request, *args, **kwargs)
+
+    def get(self, request, *args, **kwargs):
+        return render(request, 'finance/account_deactivate.html')
+
+    def post(self, request, *args, **kwargs):
+        password = request.POST.get('password', '')
+        if not request.user.check_password(password):
+            messages.error(request, 'Неверный пароль — аккаунт не отключён.')
+            return redirect('account_deactivate')
+
+        user = request.user
+        user.is_active = False
+        user.save(update_fields=['is_active'])
+        # Telegram отвязывается сразу: иначе бот продолжит слать отчёты
+        if hasattr(user, 'profile'):
+            user.profile.unlink()
+
+        logout(request)
+        messages.success(
+            request,
+            'Аккаунт отключён. Данные сохранены — восстановить доступ может администратор.',
+        )
+        return redirect('login')
+
+
+class StaffRequiredMixin(LoginRequiredMixin, UserPassesTestMixin):
+    """Раздел управления пользователями доступен только персоналу."""
+
+    def test_func(self):
+        return self.request.user.is_staff
+
+
+class UserListView(StaffRequiredMixin, PaginationQueryMixin, ListView):
+    """Список пользователей сервиса с числом операций."""
+
+    model = User
+    template_name = 'finance/user_list.html'
+    context_object_name = 'users'
+    paginate_by = 20
+
+    def get_queryset(self):
+        return User.objects.annotate(operations=Count('transactions')).order_by('-is_active', 'username')
+
+
+class UserCreateView(StaffRequiredMixin, CreateView):
+    """Создание пользователя администратором с временным паролем."""
+
+    form_class = UserCreateForm
+    template_name = 'finance/user_form.html'
+    extra_context = {'title': 'Новый пользователь', 'submit': 'Создать'}
+
+    def form_valid(self, form):
+        user = form.save()
+        password = accounts.set_temporary_password(user)
+        delivered = accounts.deliver_password(user, password, self.request.build_absolute_uri('/'))
+
+        # Пароль показывается один раз, поэтому кладём его в сессию,
+        # а не в адрес страницы: адреса остаются в истории браузера и логах
+        self.request.session['issued_credentials'] = {
+            'user_id': user.pk,
+            'username': user.username,
+            'password': password,
+            'delivered': delivered,
+            'reason': 'created',
+        }
+        return redirect('user_credentials')
+
+
+class UserResetPasswordView(StaffRequiredMixin, View):
+    """Сброс пароля сотрудником: выдаём новый и требуем сменить его при входе."""
+
+    def get(self, request, pk, *args, **kwargs):
+        account = get_object_or_404(User, pk=pk)
+        return render(request, 'finance/user_reset_confirm.html', {
+            'account': account,
+            'channels': accounts.available_channels(account),
+        })
+
+    def post(self, request, pk, *args, **kwargs):
+        user = get_object_or_404(User, pk=pk)
+        # Галочки каналов: администратор может снять любую или все
+        selected = request.POST.getlist('channels')
+        password = accounts.set_temporary_password(user)
+        delivered = accounts.deliver_password(
+            user, password, request.build_absolute_uri('/'), channels=selected,
+        )
+
+        request.session['issued_credentials'] = {
+            'user_id': user.pk,
+            'username': user.username,
+            'password': password,
+            'delivered': delivered,
+            'reason': 'reset',
+        }
+        return redirect('user_credentials')
+
+
+class UserCredentialsView(StaffRequiredMixin, TemplateView):
+    """Показ выданного пароля — ровно один раз."""
+
+    template_name = 'finance/user_credentials.html'
+
+    def get(self, request, *args, **kwargs):
+        # pop, а не get: обновление страницы не должно показывать пароль снова
+        credentials = request.session.pop('issued_credentials', None)
+        if not credentials:
+            messages.info(request, 'Пароль уже был показан. Если он потерян — сбросьте его заново.')
+            return redirect('user_list')
+        return self.render_to_response(self.get_context_data(credentials=credentials))
+
+
+class UserToggleActiveView(StaffRequiredMixin, View):
+    """Включение и отключение чужой учётной записи."""
+
+    def post(self, request, pk, *args, **kwargs):
+        user = get_object_or_404(User, pk=pk)
+        if user == request.user:
+            messages.error(request, 'Нельзя отключить самого себя.')
+            return redirect('user_list')
+
+        user.is_active = not user.is_active
+        user.save(update_fields=['is_active'])
+        if not user.is_active and hasattr(user, 'profile'):
+            user.profile.unlink()
+
+        state = 'включён' if user.is_active else 'отключён'
+        messages.success(request, f'Пользователь {user.username} {state}.')
+        return redirect('user_list')
+
+
+class UserDeleteView(StaffRequiredMixin, DeleteView):
+    """Безвозвратное удаление пользователя вместе со всеми его данными."""
+
+    model = User
+    template_name = 'finance/user_confirm_delete.html'
+    success_url = reverse_lazy('user_list')
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['operations'] = self.object.transactions.count()
+        return context
+
+    def form_valid(self, form):
+        if self.object == self.request.user:
+            messages.error(self.request, 'Нельзя удалить самого себя.')
+            return redirect('user_list')
+
+        username = self.object.username
+        purge_user(self.object)
+        messages.success(self.request, f'Пользователь {username} удалён со всеми данными.')
+        return redirect(self.success_url)
+
+
+class SitePasswordChangeView(LoginRequiredMixin, PasswordChangeView):
+    """Смена пароля со снятием требования сменить его."""
+
+    form_class = SitePasswordChangeForm
+    template_name = 'finance/password_change_form.html'
+    success_url = reverse_lazy('password_change_done')
+
+    def is_forced(self):
+        return self.request.user.profile.must_change_password
+
+    def get_form_kwargs(self):
+        return {**super().get_form_kwargs(), 'forced': self.is_forced()}
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['forced'] = self.is_forced()
+        return context
+
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        profile = self.request.user.profile
+        if profile.must_change_password:
+            profile.must_change_password = False
+            profile.save(update_fields=['must_change_password'])
+            messages.success(self.request, 'Пароль задан, доступ к сервису открыт.')
+        return response

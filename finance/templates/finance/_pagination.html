@@ -6,7 +6,8 @@
   <ul class="pagination pagination-sm mb-0 justify-content-center">
     {% if page_obj.has_previous %}
       <li class="page-item">
-        <a class="page-link" href="?page=1&amp;{{ query_string }}" title="Первая страница">&laquo;</a>
+        <a class="page-link" href="?page=1&amp;{{ query_string }}"
+           data-bs-toggle="tooltip" title="Первая страница">&laquo;</a>
       </li>
       <li class="page-item">
         <a class="page-link" href="?page={{ page_obj.previous_page_number }}&amp;{{ query_string }}">Назад</a>
@@ -26,7 +27,7 @@
       </li>
       <li class="page-item">
         <a class="page-link" href="?page={{ page_obj.paginator.num_pages }}&amp;{{ query_string }}"
-           title="Последняя страница">&raquo;</a>
+           data-bs-toggle="tooltip" title="Последняя страница">&raquo;</a>
       </li>
     {% else %}
       <li class="page-item disabled"><span class="page-link">Вперёд</span></li>

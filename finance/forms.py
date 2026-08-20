@@ -1,5 +1,6 @@
 from django import forms
-from django.contrib.auth.forms import UserCreationForm
+from django.utils.safestring import mark_safe
+from django.contrib.auth.forms import PasswordChangeForm, UserCreationForm
 from django.contrib.auth.models import User
 
 from . import periods
@@ -153,3 +154,153 @@ class ProfileForm(forms.ModelForm):
         model = Profile
         fields = ('daily_report',)
         widgets = {'daily_report': forms.CheckboxInput(attrs={'class': 'form-check-input'})}
+
+
+class UniqueUsernameMixin:
+    """Логин уникален: под ним входят, и двух одинаковых быть не может."""
+
+    def clean_username(self):
+        username = self.cleaned_data['username'].strip()
+        taken = User.objects.filter(username__iexact=username).exclude(pk=self.instance.pk)
+        if taken.exists():
+            raise forms.ValidationError('Такое имя пользователя уже занято.')
+        return username
+
+
+class AccountForm(UniqueUsernameMixin, forms.ModelForm):
+    """Данные учётной записи: логин, ФИО и почта.
+
+    Отчества в модели Django нет, поэтому оно живёт в профиле — форма
+    сохраняет обе части вместе, чтобы для пользователя это была одна анкета.
+    """
+
+    middle_name = forms.CharField(label='Отчество', required=False,
+                                  widget=forms.TextInput(attrs=CONTROL))
+
+    class Meta:
+        model = User
+        fields = ('username', 'last_name', 'first_name', 'email')
+        labels = {
+            'username': 'Имя пользователя',
+            'last_name': 'Фамилия',
+            'first_name': 'Имя',
+            'email': 'Электронная почта',
+        }
+        help_texts = {'username': 'Используется для входа'}
+        widgets = {
+            'username': forms.TextInput(attrs=CONTROL),
+            'last_name': forms.TextInput(attrs=CONTROL),
+            'first_name': forms.TextInput(attrs=CONTROL),
+            'email': forms.EmailInput(attrs=CONTROL),
+        }
+
+    # Отчество показываем сразу после имени, а не в конце анкеты
+    field_order = ('username', 'last_name', 'first_name', 'middle_name', 'email')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk:
+            self.fields['middle_name'].initial = self.instance.profile.middle_name
+
+    def save(self, commit=True):
+        user = super().save(commit)
+        profile = user.profile
+        profile.middle_name = self.cleaned_data['middle_name'].strip()
+        profile.save(update_fields=['middle_name'])
+        return user
+
+
+class UserCreateForm(UniqueUsernameMixin, forms.ModelForm):
+    """Заведение пользователя администратором.
+
+    Пароль не запрашивается: он генерируется системой и показывается один раз
+    после создания. Администратору не приходится ничего выдумывать, а
+    пользователь всё равно сменит его при первом входе.
+    """
+
+    middle_name = forms.CharField(label='Отчество', required=False,
+                                  widget=forms.TextInput(attrs=CONTROL))
+    is_staff = forms.BooleanField(
+        label='Сделать сотрудником сервиса',
+        required=False,
+        help_text='Сотрудники видят раздел «Пользователи»: заводят учётные записи, '
+                  'отключают доступ, сбрасывают пароли и удаляют аккаунты',
+        widget=forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+    )
+
+    class Meta:
+        model = User
+        fields = ('username', 'last_name', 'first_name', 'email', 'is_staff')
+        labels = {
+            'username': 'Имя пользователя',
+            'last_name': 'Фамилия',
+            'first_name': 'Имя',
+            'email': 'Электронная почта',
+        }
+        help_texts = {
+            'username': 'Используется для входа',
+            'email': 'Если указать, пароль уйдёт письмом',
+        }
+        widgets = {
+            'username': forms.TextInput(attrs=CONTROL),
+            'last_name': forms.TextInput(attrs=CONTROL),
+            'first_name': forms.TextInput(attrs=CONTROL),
+            'email': forms.EmailInput(attrs=CONTROL),
+        }
+
+    field_order = ('username', 'last_name', 'first_name', 'middle_name', 'email', 'is_staff')
+
+    def save(self, commit=True):
+        user = super().save(commit)
+        profile = user.profile
+        profile.middle_name = self.cleaned_data['middle_name'].strip()
+        profile.save(update_fields=['middle_name'])
+        return user
+
+
+class SitePasswordChangeForm(PasswordChangeForm):
+    """Смена пароля с понятными подписями и проверкой на повтор.
+
+    Подписи зависят от того, обязательная эта смена или добровольная:
+    при обязательной «старый пароль» — это временный, выданный администратором,
+    и называть его надо именно так, иначе непонятно, какой из паролей вводить.
+    """
+
+    def __init__(self, user, *args, forced=False, **kwargs):
+        super().__init__(user, *args, **kwargs)
+
+        if forced:
+            self.fields['old_password'].label = 'Временный пароль'
+            self.fields['old_password'].help_text = (
+                'Тот, что выдал администратор: пришёл письмом, в Telegram '
+                'или был передан лично'
+            )
+        else:
+            self.fields['old_password'].label = 'Текущий пароль'
+            self.fields['old_password'].help_text = 'Пароль, которым вы пользуетесь сейчас'
+
+        self.fields['new_password1'].label = 'Новый пароль'
+        self.fields['new_password2'].label = 'Повторите новый пароль'
+
+        # Django перечисляет требования своих валидаторов списком — дописываем
+        # своё пунктом в тот же список, чтобы правило было видно заранее,
+        # а не всплывало ошибкой после отправки формы
+        requirement = 'Новый пароль должен отличаться от текущего.'
+        help_text = self.fields['new_password1'].help_text
+        if '</ul>' in help_text:
+            help_text = help_text.replace('</ul>', f'<li>{requirement}</li></ul>')
+        else:
+            help_text = f'{help_text} {requirement}'.strip()
+        self.fields['new_password1'].help_text = mark_safe(help_text)
+
+    def clean_new_password1(self):
+        """Новый пароль должен отличаться от прежнего.
+
+        Django этого не проверяет, а без проверки обязательная смена
+        обходится вводом того же самого пароля — и временный пароль,
+        который видел администратор, остаётся рабочим.
+        """
+        password = self.cleaned_data['new_password1']
+        if self.user.check_password(password):
+            raise forms.ValidationError('Новый пароль совпадает с текущим — придумайте другой.')
+        return password

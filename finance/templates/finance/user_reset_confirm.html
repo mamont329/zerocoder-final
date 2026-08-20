@@ -1,0 +1,82 @@
+{% extends 'finance/base.html' %}
+
+{% block title %}Сброс пароля — FinControl{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+    <div class="card">
+      <div class="card-body p-4">
+        <h1 class="h4 mb-3">Сброс пароля</h1>
+
+        <p>
+          Пользователю <strong>{{ account.username }}</strong>
+          {% if account.profile.full_name %}({{ account.profile.full_name }}){% endif %}
+          будет выдан новый временный пароль. Прежний перестанет работать сразу,
+          а при первом входе система потребует задать собственный.
+        </p>
+
+        <form method="post">
+          {% csrf_token %}
+
+          <fieldset class="mb-3">
+            <legend class="h6">Куда отправить пароль</legend>
+
+            {% if channels %}
+              {% if 'email' in channels %}
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" name="channels" value="email"
+                         id="channel-email" checked>
+                  <label class="form-check-label" for="channel-email"
+                         data-bs-toggle="tooltip"
+                         title="Письмо с логином и временным паролем на адрес пользователя">
+                    Письмо на почту <strong>{{ account.email }}</strong>
+                  </label>
+                </div>
+              {% endif %}
+
+              {% if 'telegram' in channels %}
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" name="channels" value="telegram"
+                         id="channel-telegram" checked>
+                  <label class="form-check-label" for="channel-telegram"
+                         data-bs-toggle="tooltip"
+                         title="Сообщение ботом в привязанный чат Telegram">
+                    Сообщение в Telegram <span class="text-muted">(чат привязан)</span>
+                  </label>
+                </div>
+              {% endif %}
+
+              <div class="form-text">
+                Галочки можно снять — тогда пароль никуда не уйдёт, и передать его
+                нужно будет самостоятельно.
+              </div>
+            {% else %}
+              <div class="alert alert-secondary mb-0">
+                У пользователя не указана почта и не привязан Telegram — отправить пароль некуда.
+                Он будет показан на экране, передайте его любым известным вам способом.
+              </div>
+            {% endif %}
+          </fieldset>
+
+          <div class="alert alert-info">
+            После нажатия откроется страница с новым временным паролем и кнопкой
+            «Копировать». Пароль показывается <strong>один раз</strong>: закроете
+            или обновите страницу — придётся сбрасывать заново.
+          </div>
+
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-danger"
+                    data-bs-toggle="tooltip"
+                    title="Выдать новый временный пароль и показать его на следующей странице">
+              Сбросить пароль
+            </button>
+            <a href="{% url 'user_list' %}" class="btn btn-outline-secondary"
+               data-bs-toggle="tooltip" title="Вернуться, ничего не меняя">Отмена</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

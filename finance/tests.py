@@ -3,11 +3,12 @@ from decimal import Decimal
 
 from asgiref.sync import async_to_sync
 from django.contrib.auth.models import User
+from django.core import mail
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from . import analytics, periods, reports
+from . import accounts, analytics, periods, reports
 from .bot import services
 from .bot.keyboards import categories_keyboard, report_actions
 from .models import Category, OperationType, Transaction
@@ -568,3 +569,387 @@ class OpenPeriodChartTests(TestCase):
         rows = {row['title']: row for row in response.context['comparison']}
         self.assertEqual(rows['Расходы']['current'], Decimal('300.00'))
         self.assertEqual(rows['Расходы']['previous'], Decimal('100.00'))
+
+
+class AccountManagementTests(TestCase):
+    """Своя учётная запись: данные, пароль, отключение."""
+
+    def setUp(self):
+        self.user = User.objects.create_user('owner', password='StartPass123', email='a@b.c')
+        self.client.force_login(self.user)
+
+    def test_account_data_is_editable(self):
+        response = self.client.post(reverse('account_edit'), {
+            'username': 'newname', 'first_name': 'Иван',
+            'last_name': 'Петров', 'email': 'ivan@example.com',
+        })
+        self.assertRedirects(response, reverse('profile'))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.username, 'newname')
+        self.assertEqual(self.user.get_full_name(), 'Иван Петров')
+
+    def test_username_must_stay_unique(self):
+        User.objects.create_user('taken', password='pass')
+        response = self.client.post(reverse('account_edit'), {
+            'username': 'taken', 'first_name': '', 'last_name': '', 'email': '',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('username', response.context['form'].errors)
+
+    def test_password_change_uses_site_template(self):
+        """Страница смены пароля рисуется нашим шаблоном, а не админкой Django."""
+        response = self.client.get(reverse('password_change'))
+        self.assertTemplateUsed(response, 'finance/password_change_form.html')
+        self.assertTemplateUsed(response, 'finance/base.html')
+
+    def test_deactivation_requires_correct_password(self):
+        response = self.client.post(reverse('account_deactivate'), {'password': 'НеТот'}, follow=True)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_active)
+        self.assertContains(response, 'Неверный пароль')
+
+    def test_deactivation_keeps_data(self):
+        """Пользователь отключает себя: доступ закрыт, операции целы."""
+        food = self.user.categories.get(name='Еда')
+        Transaction.objects.create(user=self.user, type=OperationType.EXPENSE,
+                                   amount=Decimal('100.00'), category=food)
+
+        response = self.client.post(reverse('account_deactivate'), {'password': 'StartPass123'})
+        self.assertRedirects(response, reverse('login'))
+
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.is_active)
+        self.assertEqual(self.user.transactions.count(), 1)
+        self.assertFalse(self.client.login(username='owner', password='StartPass123'))
+
+    def test_deactivated_user_loses_bot_access(self):
+        chat_id = 777000
+        async_to_sync(services.link_account)(chat_id, self.user.profile.link_code)
+        self.client.post(reverse('account_deactivate'), {'password': 'StartPass123'})
+        self.assertIsNone(async_to_sync(services.get_user)(chat_id))
+
+
+class UserAdministrationTests(TestCase):
+    """Раздел «Пользователи» для персонала."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user('staff', password='pass', is_staff=True)
+        self.member = User.objects.create_user('member', password='pass')
+
+    def test_section_is_hidden_from_regular_users(self):
+        self.client.force_login(self.member)
+        self.assertEqual(self.client.get(reverse('user_list')).status_code, 403)
+
+    def test_staff_sees_all_users(self):
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse('user_list'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context['users']), 2)
+
+    def test_staff_creates_user_with_default_categories(self):
+        self.client.force_login(self.staff)
+        response = self.client.post(reverse('user_add'), {
+            'username': 'created', 'email': 'created@example.com',
+            'last_name': '', 'first_name': '', 'middle_name': '',
+        })
+        # После создания показывается выданный пароль
+        self.assertRedirects(response, reverse('user_credentials'))
+        created = User.objects.get(username='created')
+        self.assertEqual(created.categories.count(), 7)
+        self.assertTrue(hasattr(created, 'profile'))
+
+    def test_staff_toggles_access(self):
+        self.client.force_login(self.staff)
+        self.client.post(reverse('user_toggle', args=[self.member.pk]))
+        self.member.refresh_from_db()
+        self.assertFalse(self.member.is_active)
+
+        self.client.post(reverse('user_toggle', args=[self.member.pk]))
+        self.member.refresh_from_db()
+        self.assertTrue(self.member.is_active)
+
+    def test_staff_cannot_disable_self(self):
+        self.client.force_login(self.staff)
+        self.client.post(reverse('user_toggle', args=[self.staff.pk]), follow=True)
+        self.staff.refresh_from_db()
+        self.assertTrue(self.staff.is_active)
+
+    def test_staff_deletes_user_with_data(self):
+        food = self.member.categories.get(name='Еда')
+        Transaction.objects.create(user=self.member, type=OperationType.EXPENSE,
+                                   amount=Decimal('50.00'), category=food)
+
+        self.client.force_login(self.staff)
+        self.client.post(reverse('user_delete', args=[self.member.pk]))
+        self.assertFalse(User.objects.filter(username='member').exists())
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    def test_regular_user_cannot_delete_anyone(self):
+        self.client.force_login(self.member)
+        response = self.client.post(reverse('user_delete', args=[self.staff.pk]))
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(User.objects.filter(username='staff').exists())
+
+
+class TemporaryPasswordTests(TestCase):
+    """Выдача временных паролей и обязательная смена при первом входе."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user('staff', password='pass', is_staff=True)
+        self.client.force_login(self.staff)
+
+    def create_user(self, **extra):
+        data = {'username': 'created', 'last_name': 'Петров', 'first_name': 'Иван',
+                'middle_name': 'Сергеевич', 'email': ''}
+        data.update(extra)
+        return self.client.post(reverse('user_add'), data)
+
+    def test_created_user_gets_generated_password(self):
+        """Администратор пароль не придумывает: система выдаёт его сама."""
+        response = self.create_user()
+        # Без перехода по ссылке: страница показывает пароль один раз и стирает его
+        self.assertRedirects(response, reverse('user_credentials'), fetch_redirect_response=False)
+
+        credentials = self.client.session['issued_credentials']
+        self.assertEqual(credentials['username'], 'created')
+        self.assertEqual(len(credentials['password']), accounts.PASSWORD_LENGTH)
+
+        created = User.objects.get(username='created')
+        self.assertTrue(created.check_password(credentials['password']))
+        self.assertTrue(created.profile.must_change_password)
+        self.assertEqual(created.profile.middle_name, 'Сергеевич')
+
+    def test_password_is_shown_once(self):
+        self.create_user()
+        first = self.client.get(reverse('user_credentials'))
+        self.assertContains(first, 'Временный пароль')
+
+        second = self.client.get(reverse('user_credentials'))
+        self.assertRedirects(second, reverse('user_list'))
+
+    def test_password_is_emailed_when_address_is_known(self):
+        self.create_user(email='created@example.com')
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('created@example.com', mail.outbox[0].to)
+        self.assertIn('Временный пароль', mail.outbox[0].body)
+
+        credentials = self.client.session['issued_credentials']
+        self.assertEqual(credentials['delivered'], ['почта created@example.com'])
+
+    def test_without_contacts_nothing_is_sent(self):
+        """Каналов нет — пароль остаётся только на экране, для передачи вручную."""
+        self.create_user()
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(self.client.session['issued_credentials']['delivered'], [])
+
+    def test_staff_resets_password(self):
+        member = User.objects.create_user('member', password='OldPass123')
+        response = self.client.post(reverse('user_reset_password', args=[member.pk]))
+        self.assertRedirects(response, reverse('user_credentials'), fetch_redirect_response=False)
+
+        member.refresh_from_db()
+        self.assertFalse(member.check_password('OldPass123'))
+        self.assertTrue(member.profile.must_change_password)
+
+    def test_regular_user_cannot_reset_others(self):
+        member = User.objects.create_user('member', password='pass')
+        self.client.force_login(member)
+        response = self.client.post(reverse('user_reset_password', args=[self.staff.pk]))
+        self.assertEqual(response.status_code, 403)
+
+
+class ForcedPasswordChangeTests(TestCase):
+    """Пока пароль временный, сервис закрыт."""
+
+    def setUp(self):
+        self.user = User.objects.create_user('member', password='pass')
+        self.password = accounts.set_temporary_password(self.user)
+        self.client.force_login(self.user)
+
+    def test_pages_redirect_to_password_change(self):
+        for name in ('dashboard', 'transaction_list', 'analytics', 'profile'):
+            response = self.client.get(reverse(name))
+            self.assertRedirects(response, reverse('password_change'),
+                                 msg_prefix=f'страница {name}')
+
+    def test_password_change_page_is_available(self):
+        response = self.client.get(reverse('password_change'))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context['forced'])
+
+    def test_changing_password_opens_access(self):
+        response = self.client.post(reverse('password_change'), {
+            'old_password': self.password,
+            'new_password1': 'Moy-Sobstvenniy-1',
+            'new_password2': 'Moy-Sobstvenniy-1',
+        })
+        self.assertRedirects(response, reverse('password_change_done'))
+
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.profile.must_change_password)
+        self.assertEqual(self.client.get(reverse('dashboard')).status_code, 200)
+
+    def test_admin_is_closed_too(self):
+        """Иначе требование обходится через админку."""
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_staff'])
+        response = self.client.get('/admin/')
+        self.assertRedirects(response, reverse('password_change'), fetch_redirect_response=False)
+
+
+class MiddleNameTests(TestCase):
+    """Отчество хранится в профиле и правится вместе с остальными данными."""
+
+    def setUp(self):
+        self.user = User.objects.create_user('member', password='pass')
+        self.client.force_login(self.user)
+
+    def test_account_form_saves_middle_name(self):
+        response = self.client.post(reverse('account_edit'), {
+            'username': 'member', 'last_name': 'Иванов',
+            'first_name': 'Пётр', 'middle_name': 'Алексеевич', 'email': '',
+        })
+        self.assertRedirects(response, reverse('profile'))
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.profile.middle_name, 'Алексеевич')
+        self.assertEqual(self.user.profile.full_name, 'Иванов Пётр Алексеевич')
+
+    def test_full_name_skips_empty_parts(self):
+        self.user.first_name = 'Пётр'
+        self.user.save(update_fields=['first_name'])
+        self.assertEqual(self.user.profile.full_name, 'Пётр')
+
+
+class LastStaffProtectionTests(TestCase):
+    """Последний сотрудник не может отключить сам себя."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user('staff', password='StaffPass123', is_staff=True)
+        self.client.force_login(self.staff)
+
+    def test_button_is_disabled_with_explanation(self):
+        response = self.client.get(reverse('profile'))
+        self.assertTrue(response.context['is_last_staff'])
+        self.assertContains(response, 'disabled')
+        self.assertContains(response, 'единственный сотрудник')
+
+    def test_deactivation_is_refused(self):
+        """Защита не только в разметке: прямой запрос тоже отклоняется."""
+        response = self.client.post(reverse('account_deactivate'),
+                                    {'password': 'StaffPass123'}, follow=True)
+        self.staff.refresh_from_db()
+        self.assertTrue(self.staff.is_active)
+        self.assertContains(response, 'отключить себя нельзя')
+
+    def test_second_staff_removes_the_restriction(self):
+        User.objects.create_user('colleague', password='pass', is_staff=True)
+        response = self.client.get(reverse('profile'))
+        self.assertFalse(response.context['is_last_staff'])
+
+        self.client.post(reverse('account_deactivate'), {'password': 'StaffPass123'})
+        self.staff.refresh_from_db()
+        self.assertFalse(self.staff.is_active)
+
+    def test_ordinary_user_is_not_restricted(self):
+        member = User.objects.create_user('member', password='MemberPass123')
+        self.client.force_login(member)
+        response = self.client.get(reverse('profile'))
+        self.assertFalse(response.context['is_last_staff'])
+
+
+class DeliveryChannelTests(TestCase):
+    """Выбор каналов доставки временного пароля."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user('staff', password='pass', is_staff=True)
+        self.client.force_login(self.staff)
+        self.member = User.objects.create_user('member', password='pass', email='member@example.com')
+
+    def test_confirm_page_lists_available_channels(self):
+        response = self.client.get(reverse('user_reset_password', args=[self.member.pk]))
+        self.assertEqual(response.context['channels'], ['email'])
+        self.assertContains(response, 'member@example.com')
+        self.assertContains(response, 'Копировать')
+
+    def test_unchecked_channel_is_not_used(self):
+        """Галочка снята — письмо не уходит, пароль только на экране."""
+        self.client.post(reverse('user_reset_password', args=[self.member.pk]), {'channels': []})
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(self.client.session['issued_credentials']['delivered'], [])
+
+    def test_checked_channel_is_used(self):
+        self.client.post(reverse('user_reset_password', args=[self.member.pk]),
+                         {'channels': ['email']})
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('member@example.com', mail.outbox[0].to)
+
+    def test_channels_are_empty_without_contacts(self):
+        loner = User.objects.create_user('loner', password='pass')
+        response = self.client.get(reverse('user_reset_password', args=[loner.pk]))
+        self.assertEqual(response.context['channels'], [])
+        self.assertContains(response, 'отправить пароль некуда')
+
+
+class PasswordChangeFormTests(TestCase):
+    """Подписи полей и запрет оставить прежний пароль."""
+
+    def setUp(self):
+        self.user = User.objects.create_user('member', password='Tekushiy-Parol-1')
+        self.client.force_login(self.user)
+
+    def test_labels_explain_which_password_is_asked(self):
+        response = self.client.get(reverse('password_change'))
+        field = response.context['form'].fields['old_password']
+        self.assertEqual(field.label, 'Текущий пароль')
+
+    def test_forced_change_calls_it_temporary(self):
+        """При обязательной смене вводится временный пароль — так и написано."""
+        password = accounts.set_temporary_password(self.user)
+        # Смена пароля рвёт прежнюю сессию — входим заново уже по временному
+        self.client.login(username='member', password=password)
+        response = self.client.get(reverse('password_change'))
+        field = response.context['form'].fields['old_password']
+        self.assertEqual(field.label, 'Временный пароль')
+        self.assertIn('администратор', field.help_text)
+
+    def test_same_password_is_rejected(self):
+        response = self.client.post(reverse('password_change'), {
+            'old_password': 'Tekushiy-Parol-1',
+            'new_password1': 'Tekushiy-Parol-1',
+            'new_password2': 'Tekushiy-Parol-1',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('new_password1', response.context['form'].errors)
+        self.assertTrue(self.user.check_password('Tekushiy-Parol-1'))
+
+    def test_temporary_password_cannot_be_kept(self):
+        """Иначе обязательная смена обходится вводом того же пароля."""
+        password = accounts.set_temporary_password(self.user)
+        self.client.login(username='member', password=password)
+        response = self.client.post(reverse('password_change'), {
+            'old_password': password,
+            'new_password1': password,
+            'new_password2': password,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.profile.must_change_password)
+
+    def test_different_password_is_accepted(self):
+        response = self.client.post(reverse('password_change'), {
+            'old_password': 'Tekushiy-Parol-1',
+            'new_password1': 'Sovsem-Drugoy-2',
+            'new_password2': 'Sovsem-Drugoy-2',
+        })
+        self.assertRedirects(response, reverse('password_change_done'))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('Sovsem-Drugoy-2'))
+
+    def test_requirement_is_listed_before_submitting(self):
+        """Правило видно в требованиях к паролю, а не только в ошибке."""
+        response = self.client.get(reverse('password_change'))
+        self.assertContains(response, 'Новый пароль должен отличаться от текущего')
+
+        requirements = response.context['form'].fields['new_password1'].help_text
+        self.assertIn('<li>Новый пароль должен отличаться от текущего.</li>', requirements)

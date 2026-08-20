@@ -1,0 +1,36 @@
+{% extends 'finance/base.html' %}
+
+{% block title %}Удаление пользователя — FinControl{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-6">
+    <div class="card">
+      <div class="card-body p-4">
+        <h1 class="h4 mb-3">Удаление пользователя</h1>
+
+        <div class="alert alert-danger">
+          Пользователь <strong>{{ object.username }}</strong> будет удалён вместе
+          со всеми данными: операций — {{ operations }}, категорий — {{ object.categories.count }}.
+          Восстановить их будет невозможно.
+        </div>
+
+        <p class="text-muted">
+          Если нужно лишь закрыть доступ, вернитесь и нажмите «Отключить» —
+          данные при этом сохранятся.
+        </p>
+
+        <form method="post">
+          {% csrf_token %}
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-danger" data-bs-toggle="tooltip"
+                    title="Учётная запись и все её данные будут стёрты">Удалить безвозвратно</button>
+            <a href="{% url 'user_list' %}" class="btn btn-outline-secondary"
+               data-bs-toggle="tooltip" title="Вернуться к списку">Отмена</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

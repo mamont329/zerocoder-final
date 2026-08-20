@@ -1,0 +1,40 @@
+{% extends 'finance/base.html' %}
+
+{% block title %}Отключение аккаунта — FinControl{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-6">
+    <div class="card">
+      <div class="card-body p-4">
+        <h1 class="h4 mb-3">Отключение аккаунта</h1>
+
+        <div class="alert alert-warning">
+          После отключения вход в кабинет и работа Telegram-бота прекратятся.
+          <strong>Операции и категории сохранятся</strong> — снова включить аккаунт
+          может администратор сервиса.
+        </div>
+
+        <p class="text-muted">
+          Безвозвратное удаление данных выполняет только администратор.
+        </p>
+
+        <form method="post" novalidate>
+          {% csrf_token %}
+          <div class="mb-3">
+            <label class="form-label" for="password">Подтвердите паролем</label>
+            <input type="password" name="password" id="password" class="form-control"
+                   autocomplete="current-password" required>
+          </div>
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-danger" data-bs-toggle="tooltip"
+                    title="Вход и бот закроются, данные останутся">Отключить аккаунт</button>
+            <a href="{% url 'profile' %}" class="btn btn-outline-secondary"
+               data-bs-toggle="tooltip" title="Вернуться в профиль">Отмена</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
