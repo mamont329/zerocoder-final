@@ -46,6 +46,35 @@ def page_count(total):
     return ceil(total / PAGE_SIZE)
 
 
+def date_keyboard():
+    """Выбор даты операции: два частых варианта и ручной ввод.
+
+    Дата в ТЗ — обязательное поле, и из чата тоже должна задаваться:
+    трату часто записывают на следующий день.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text='Сегодня', callback_data='add:date:today'),
+            InlineKeyboardButton(text='Вчера', callback_data='add:date:yesterday'),
+        ],
+        [InlineKeyboardButton(text='Другая дата', callback_data='add:date:custom')],
+        [InlineKeyboardButton(text='Отмена', callback_data='add:cancel')],
+    ])
+
+
+def description_keyboard():
+    """Последний шаг: можно вернуться к дате, если ошибся с ней.
+
+    Дата без года разрешается автоматически, и результат не всегда совпадает
+    с ожиданием — «23.09» в августе это прошлый сентябрь. Возврат нужен,
+    чтобы поправить, не начиная ввод заново.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='Изменить дату', callback_data='add:back:date')],
+        [InlineKeyboardButton(text='Отмена', callback_data='add:cancel')],
+    ])
+
+
 def categories_keyboard(categories, page=0):
     """Выбор категории: по две в ряд, плюс создание новой и постраничные стрелки.
 

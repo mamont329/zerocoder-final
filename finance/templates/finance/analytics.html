@@ -7,7 +7,17 @@
 библиотека подключается в head — иначе скрипт фигуры выполнится раньше неё.
 {% endcomment %}
 {% block extra_head %}
+{# Plotly подключается с CDN: минифицированная библиотека весит 3.5 МБ,
+   и хранить её в репозитории ради учебного стенда несоразмерно #}
 <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<script>
+  // Без сети библиотека не загрузится — вместо пустого места объясняем, почему
+  window.addEventListener('DOMContentLoaded', () => {
+    if (window.Plotly) return;
+    document.querySelectorAll('.js-plotly-plot, [id^="plotly"]').forEach(el => el.remove());
+    document.querySelectorAll('.js-chart-fallback').forEach(el => el.classList.remove('d-none'));
+  });
+</script>
 {% endblock %}
 
 {% block content %}
@@ -141,6 +151,10 @@
   <div class="card-body">
     <h2 class="h5 mb-3" data-bs-toggle="tooltip"
         title="Суммы по дням; на длинных периодах — по месяцам">Доходы и расходы во времени</h2>
+    <p class="text-muted mb-0 d-none js-chart-fallback">
+      Графики не загрузились: библиотека Plotly подключается из интернета.
+      Цифры за период есть в карточках выше и в таблице «Расходы по категориям».
+    </p>
     {% if timeline_chart %}
       {{ timeline_chart|safe }}
     {% else %}

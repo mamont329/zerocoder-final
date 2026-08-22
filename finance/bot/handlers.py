@@ -1,19 +1,27 @@
 """Обработчики команд и кнопок бота."""
-from decimal import Decimal, InvalidOperation
+from datetime import date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
+from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from .. import periods
 from ..analytics import money
+from ..reports import esc
 from ..models import OperationType
 from . import services
-from .keyboards import ADD_EXPENSE, ADD_INCOME, MAIN_MENU, TODAY, categories_keyboard, report_actions
+from .keyboards import (ADD_EXPENSE, ADD_INCOME, MAIN_MENU, TODAY, categories_keyboard,
+                        date_keyboard, description_keyboard, report_actions)
 
 router = Router()
+
+# Модель хранит 12 цифр при двух знаках после запятой — больше не поместится
+MAX_AMOUNT = Decimal('9999999999.99')
 
 NOT_LINKED = (
     'Этот чат не привязан к аккаунту FinControl.\n\n'
@@ -36,7 +44,7 @@ HELP = (
 
 
 class AddOperation(StatesGroup):
-    """Шаги добавления операции: сумма → категория → описание.
+    """Шаги добавления операции: сумма → категория → дата → описание.
 
     Один сценарий на доход и расход: отличается только набор категорий,
     а тип операции потом берётся из выбранной категории. Шаг new_category —
@@ -46,6 +54,8 @@ class AddOperation(StatesGroup):
     amount = State()
     category = State()
     new_category = State()
+    date = State()
+    custom_date = State()
     description = State()
 
 
@@ -68,7 +78,7 @@ async def cmd_start(message: Message, command: CommandObject):
             await message.answer('Код не подошёл. Проверьте его в разделе «Профиль» на сайте.')
             return
         await message.answer(
-            f'Готово, чат привязан к аккаунту <b>{user.username}</b>.\n\n{HELP}',
+            f'Готово, чат привязан к аккаунту <b>{esc(user.username)}</b>.\n\n{HELP}',
             reply_markup=MAIN_MENU,
         )
         return
@@ -77,7 +87,7 @@ async def cmd_start(message: Message, command: CommandObject):
     if user is None:
         await message.answer(NOT_LINKED)
         return
-    await message.answer(f'С возвращением, {user.username}!\n\n{HELP}', reply_markup=MAIN_MENU)
+    await message.answer(f'С возвращением, {esc(user.username)}!\n\n{HELP}', reply_markup=MAIN_MENU)
 
 
 @router.message(Command('help'))
@@ -218,16 +228,104 @@ async def add_from_button(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+def parse_amount(raw):
+    """Разбирает сумму из сообщения. Возвращает пару (сумма, ошибка).
+
+    Decimal принимает 'nan' и 'Infinity' без исключения, и дальше любое
+    сравнение с nan падает уже вне блока try. Поэтому конечность проверяется
+    отдельно, до всех сравнений.
+    """
+    try:
+        amount = Decimal(raw.replace(',', '.').strip())
+    except InvalidOperation:
+        return None, 'Не похоже на сумму. Отправьте число, например <code>350.50</code>'
+
+    if not amount.is_finite():
+        return None, 'Сумма должна быть обычным числом.'
+    if amount <= 0:
+        return None, 'Сумма должна быть больше нуля.'
+    if amount > MAX_AMOUNT:
+        return None, f'Слишком большая сумма. Максимум — {money(MAX_AMOUNT)} ₽.'
+
+    # Модель хранит два знака после запятой: округляем здесь, иначе
+    # ValidationError вылезет в самом конце сценария
+    return amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP), None
+
+
+# Слова, которыми дату называют чаще, чем числами
+RELATIVE_DAYS = {'сегодня': 0, 'вчера': 1, 'позавчера': 2}
+
+
+def recent_date(day, month=None, today=None):
+    """Ближайшая прошедшая дата с таким днём и, если указан, месяцем.
+
+    Недостающая часть берётся из текущей: «25.12» в августе — это прошлый
+    декабрь, а «02» в конце месяца — второе число текущего. Отступаем назад,
+    только если дата иначе оказалась бы в будущем, которого ещё не было.
+    Заодно так решается «31» в марте: в феврале такого числа нет, берётся январь.
+    """
+    today = today or timezone.localdate()
+    year, current_month = today.year, month or today.month
+
+    # Двенадцати шагов хватает: любое число встречается хотя бы раз в году
+    for _ in range(12):
+        try:
+            candidate = date(year, current_month, day)
+        except ValueError:
+            candidate = None
+
+        if candidate and candidate <= today:
+            return candidate
+
+        if month:
+            # Месяц задан пользователем — двигаем только год
+            year -= 1
+        else:
+            current_month -= 1
+            if current_month == 0:
+                current_month, year = 12, year - 1
+    return None
+
+
+def parse_date(raw):
+    """Дата из сообщения.
+
+    Понимает слова «сегодня», «вчера», «позавчера», полные даты «25.12.2026»
+    и «25.12.26», дату без года «25.12» и одно число «25» — день текущего
+    или прошлого месяца.
+    """
+    raw = raw.strip().lower()
+
+    if raw in RELATIVE_DAYS:
+        return timezone.localdate() - timedelta(days=RELATIVE_DAYS[raw])
+
+    # Полная дата: год указан явно, ничего не достраиваем
+    for fmt in ('%d.%m.%Y', '%d.%m.%y'):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+
+    # День с месяцем, но без года
+    try:
+        parsed = datetime.strptime(raw, '%d.%m').date()
+    except ValueError:
+        pass
+    else:
+        return recent_date(parsed.day, parsed.month)
+
+    # Одно число — день месяца
+    if raw.isdigit() and 1 <= int(raw) <= 31:
+        return recent_date(int(raw))
+
+    return None
+
+
 @router.message(AddOperation.amount)
 async def add_amount(message: Message, state: FSMContext):
-    raw = (message.text or '').replace(',', '.').strip()
-    try:
-        amount = Decimal(raw)
-    except InvalidOperation:
-        await message.answer('Не похоже на сумму. Отправьте число, например <code>350.50</code>')
-        return
-    if amount <= 0:
-        await message.answer('Сумма должна быть больше нуля.')
+    amount, error = parse_amount(message.text or '')
+    if error:
+        await message.answer(error)
         return
 
     data = await state.get_data()
@@ -246,14 +344,82 @@ async def add_amount(message: Message, state: FSMContext):
     await message.answer('Выберите категорию:', reply_markup=categories_keyboard(categories))
 
 
-async def ask_description(message: Message, state: FSMContext, category):
-    """Общий последний шаг: категория выбрана, осталось описание."""
+async def ask_date(message: Message, state: FSMContext, category):
+    """Категория выбрана — уточняем дату операции."""
     await state.update_data(category_id=category.pk)
+    await state.set_state(AddOperation.date)
+    await message.answer(
+        f'Категория: <b>{esc(category.name)}</b>\n'
+        'Когда это было? Выберите кнопкой или напишите: «вчера», «25.12».',
+        reply_markup=date_keyboard(),
+    )
+
+
+async def ask_description(message: Message, state: FSMContext, when):
+    """Последний шаг: дата известна, осталось описание."""
+    await state.update_data(date=when.isoformat())
     await state.set_state(AddOperation.description)
     await message.answer(
-        f'Категория: <b>{category.name}</b>\n'
-        'Добавьте описание или отправьте <code>-</code>, чтобы пропустить.'
+        f'Дата: <b>{when:%d.%m.%Y}</b>\n'
+        'Добавьте описание или отправьте <code>-</code>, чтобы пропустить.',
+        reply_markup=description_keyboard(),
     )
+
+
+@router.callback_query(AddOperation.date, F.data.startswith('add:date:'))
+async def add_date(callback: CallbackQuery, state: FSMContext):
+    choice = callback.data.split(':')[-1]
+
+    if choice == 'custom':
+        await state.set_state(AddOperation.custom_date)
+        await callback.message.answer(
+            'Отправьте дату: <code>25.12.2026</code>, <code>25.12</code>, '
+            'просто число <code>25</code> или словом — <code>вчера</code>.'
+        )
+        await callback.answer()
+        return
+
+    today = timezone.localdate()
+    chosen = today if choice == 'today' else today - timedelta(days=1)
+    await ask_description(callback.message, state, chosen)
+    await callback.answer()
+
+
+async def accept_date(message: Message, state: FSMContext, hint):
+    """Разбирает написанную дату и переходит к описанию.
+
+    Будущее отсекается здесь: правило есть и в модели, но сказать о нём
+    сразу честнее, чем принять дату и споткнуться на сохранении.
+    """
+    parsed = parse_date(message.text or '')
+    if parsed is None:
+        await message.answer(hint)
+        return
+    if parsed > timezone.localdate():
+        await message.answer('Дата не может быть в будущем — операции вносятся по факту.')
+        return
+    await ask_description(message, state, parsed)
+
+
+@router.message(AddOperation.date)
+async def add_date_typed(message: Message, state: FSMContext):
+    """Дата, написанная текстом, пока на экране кнопки.
+
+    Без этого обработчика слово «вчера» уходило в общий обработчик, и вместо
+    ответа пользователь получал справку, оставаясь на том же шаге.
+    """
+    await accept_date(message, state, (
+        'Выберите дату кнопкой или напишите её: <code>вчера</code>, '
+        '<code>25</code>, <code>25.12</code> или <code>25.12.2026</code>.'
+    ))
+
+
+@router.message(AddOperation.custom_date)
+async def add_custom_date(message: Message, state: FSMContext):
+    await accept_date(message, state, (
+        'Не разобрал дату. Отправьте её в формате <code>25.12.2026</code>, '
+        '<code>25.12</code>, просто числом <code>25</code> или словом — <code>вчера</code>.'
+    ))
 
 
 @router.callback_query(AddOperation.category, F.data.startswith('add:category:'))
@@ -264,7 +430,7 @@ async def add_category(callback: CallbackQuery, state: FSMContext):
         await callback.answer('Категория не найдена', show_alert=True)
         return
 
-    await ask_description(callback.message, state, category)
+    await ask_date(callback.message, state, category)
     await callback.answer()
 
 
@@ -303,10 +469,24 @@ async def save_new_category(message: Message, state: FSMContext):
         user, message.text or '', data['operation_type'],
     )
     if error:
-        await message.answer(f'{error}\nПопробуйте другое название.')
+        await message.answer(f'{esc(error)}\nПопробуйте другое название.')
         return
 
-    await ask_description(message, state, category)
+    await ask_date(message, state, category)
+
+
+@router.callback_query(AddOperation.description, F.data == 'add:back:date')
+async def back_to_date(callback: CallbackQuery, state: FSMContext):
+    """Возврат к вводу даты, когда она разошлась с ожиданием."""
+    data = await state.get_data()
+    user = await services.get_user(callback.message.chat.id)
+    category = await services.get_category(user, data['category_id'])
+    if category is None:
+        await callback.answer('Категория не найдена', show_alert=True)
+        return
+
+    await ask_date(callback.message, state, category)
+    await callback.answer()
 
 
 @router.callback_query(F.data == 'add:cancel')
@@ -325,12 +505,27 @@ async def add_description(message: Message, state: FSMContext):
 
     user = await services.get_user(message.chat.id)
     category = await services.get_category(user, data['category_id'])
-    transaction = await services.create_operation(user, category, data['amount'], description)
-    await state.clear()
+    when = datetime.strptime(data['date'], '%Y-%m-%d').date()
 
+    try:
+        transaction = await services.create_operation(
+            user, category, data['amount'], description, when,
+        )
+    except ValidationError as error:
+        # Модель — последний рубеж: её жалобы должны доходить до пользователя,
+        # а не теряться в логе обработчика
+        await state.clear()
+        problems = '; '.join(sum(error.message_dict.values(), []))
+        await message.answer(
+            f'Не удалось сохранить операцию: {esc(problems)}\nПопробуйте ещё раз.',
+            reply_markup=MAIN_MENU,
+        )
+        return
+
+    await state.clear()
     sign = '+' if transaction.type == OperationType.INCOME else '−'
     await message.answer(
-        f'Записал: <b>{sign}{money(transaction.amount)} ₽</b> · {category.name}',
+        f'Записал: <b>{sign}{money(transaction.amount)} ₽</b> · {esc(category.name)}',
         reply_markup=MAIN_MENU,
     )
 

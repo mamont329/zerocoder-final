@@ -137,12 +137,51 @@ LOGOUT_REDIRECT_URL = 'login'
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
-# Почта не настроена: письма печатаются в консоль сервера. Для боевой работы
-# сюда прописывается SMTP, остальной код менять не потребуется.
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
-    },
-}
+# Пока EMAIL_HOST не задан, письма печатаются в консоль сервера — так удобно
+# смотреть выданные пароли на учебном стенде. Стоит указать хост в .env,
+# и та же отправка пойдёт по SMTP: код, который шлёт письма, не меняется.
+if os.getenv('EMAIL_HOST'):
+    MAILERS = {
+        'default': {
+            'BACKEND': 'django.core.mail.backends.smtp.EmailBackend',
+            'OPTIONS': {
+                'host': os.getenv('EMAIL_HOST'),
+                'port': int(os.getenv('EMAIL_PORT', '587')),
+                'username': os.getenv('EMAIL_USER', ''),
+                'password': os.getenv('EMAIL_PASSWORD', ''),
+                'use_tls': os.getenv('EMAIL_USE_TLS', 'True').lower() in ('true', '1', 'yes'),
+            },
+        },
+    }
+else:
+    MAILERS = {
+        'default': {
+            'BACKEND': 'django.core.mail.backends.console.EmailBackend',
+        },
+    }
 
 DEFAULT_FROM_EMAIL = 'FinControl <noreply@fincontrol.local>'
+
+
+# Защита боевого запуска
+# https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
+#
+# Включается только при DEBUG=False: на локальной машине сайт работает по http,
+# и требование защищённых кук просто не дало бы войти.
+if not DEBUG:
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_SSL_REDIRECT = True
+
+    # Год — рекомендованное значение HSTS. Ставить его стоит, только когда
+    # HTTPS настроен: браузер запомнит запрет на http и до срока не забудет
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+
+    # За обратным прокси Django видит http, а протокол приходит заголовком
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+    CSRF_TRUSTED_ORIGINS = [
+        origin for origin in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if origin
+    ]

@@ -123,7 +123,7 @@ def get_category(user, category_id):
 
 
 @sync_to_async
-def create_operation(user, category, amount, description=''):
+def create_operation(user, category, amount, description='', date=None):
     """Создаёт операцию с проверками модели.
 
     Тип берётся у категории — она уже знает, доход это или расход.
@@ -137,6 +137,8 @@ def create_operation(user, category, amount, description=''):
         category=category,
         description=description,
     )
+    if date is not None:
+        transaction.date = date
     transaction.full_clean()
     transaction.save()
     return transaction

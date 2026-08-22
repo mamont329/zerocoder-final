@@ -5,10 +5,10 @@ import os
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
 from django.core.exceptions import ImproperlyConfigured
 
 from .handlers import router
+from .storage import DjangoStorage
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,8 @@ def get_bot():
 
 
 def get_dispatcher():
-    dispatcher = Dispatcher(storage=MemoryStorage())
+    # Хранилище в базе, а не в памяти: незавершённый диалог переживёт перезапуск
+    dispatcher = Dispatcher(storage=DjangoStorage())
     dispatcher.include_router(router)
     return dispatcher
 

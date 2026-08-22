@@ -1,11 +1,14 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from aiogram.fsm.storage.base import StorageKey
 from asgiref.sync import async_to_sync
 from django.contrib.auth.models import User
 from django.core import mail
+from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
@@ -13,8 +16,11 @@ from django.utils import timezone
 
 from . import accounts, analytics, periods, reports
 from .bot import services
-from .bot.keyboards import categories_keyboard, report_actions
-from .models import Category, NotificationLog, OperationType, SavedReport, Transaction
+from .bot.handlers import parse_amount, parse_date, recent_date
+from .bot.keyboards import categories_keyboard, description_keyboard, report_actions
+from .bot.storage import DjangoStorage
+from .models import (BotDialog, Category, MaintenanceRun, NotificationLog, OperationType,
+                     SavedReport, Transaction)
 
 
 class SignUpTests(TestCase):
@@ -1156,29 +1162,58 @@ class MaintenanceViewTests(TestCase):
         response = self.client.get(reverse('maintenance'))
         self.assertEqual(list(response.context['recipients']), [self.member])
 
+    def run_action(self, action, **extra):
+        """Запускает действие и дожидается результата.
+
+        В бою команда уходит в отдельный поток, а страница опрашивает состояние.
+        В тесте поток не нужен: подменяем его прямым вызовом.
+        """
+        with patch('finance.views.threading.Thread') as thread:
+            thread.side_effect = lambda target, args, daemon: SimpleNamespace(
+                start=lambda: target(*args)
+            )
+            self.client.post(reverse('maintenance'), {'action': action, **extra})
+        return MaintenanceRun.objects.latest('started_at')
+
     def test_status_action_does_not_send(self):
         with patch('finance.management.commands.senddigest.send_to_chat') as send:
-            self.client.post(reverse('maintenance'), {'action': 'status'})
+            run = self.run_action('status')
             send.assert_not_called()
 
-        output = self.client.get(reverse('maintenance')).context['output']
-        self.assertIn('последняя сводка', output['text'])
-        self.assertEqual(output['command'], 'python manage.py senddigest --status')
+        self.assertEqual(run.status, MaintenanceRun.Status.DONE)
+        self.assertIn('последняя сводка', run.output)
+        self.assertEqual(run.command, 'python manage.py senddigest --status')
 
     def test_send_action_delivers_message(self):
         with patch('finance.management.commands.senddigest.send_to_chat', return_value=True) as send:
-            self.client.post(reverse('maintenance'), {'action': 'send'})
+            run = self.run_action('send')
             self.assertEqual(send.call_count, 1)
+        self.assertIn('отправлено', run.output)
 
-        self.assertIn('отправлено', self.client.get(reverse('maintenance')).context['output']['text'])
+    def test_page_does_not_wait_for_the_command(self):
+        """Запрос отдаётся сразу, состояние потом опрашивается отдельной ссылкой."""
+        response = self.client.post(reverse('maintenance'), {'action': 'status'})
+        run = MaintenanceRun.objects.latest('started_at')
+        self.assertRedirects(response, f'{reverse("maintenance")}?run={run.pk}',
+                             fetch_redirect_response=False)
+
+        status = self.client.get(reverse('maintenance_run', args=[run.pk])).json()
+        self.assertIn(status['status'], [MaintenanceRun.Status.RUNNING, MaintenanceRun.Status.DONE])
+        self.assertEqual(status['command'], run.command)
+
+    def test_run_status_is_closed_for_regular_users(self):
+        run = MaintenanceRun.objects.create(started_by=self.staff, title='Проверка',
+                                            command='python manage.py senddigest --status')
+        self.client.force_login(self.member)
+        self.assertEqual(self.client.get(reverse('maintenance_run', args=[run.pk])).status_code, 403)
 
     def test_force_repeats_delivery(self):
         with patch('finance.management.commands.senddigest.send_to_chat', return_value=True) as send:
-            self.client.post(reverse('maintenance'), {'action': 'send'})
-            self.client.post(reverse('maintenance'), {'action': 'send'})
+            self.run_action('send')
+            self.run_action('send')
             self.assertEqual(send.call_count, 1)
 
-            self.client.post(reverse('maintenance'), {'action': 'force'})
+            self.run_action('force')
             self.assertEqual(send.call_count, 2)
 
     def test_action_can_target_single_user(self):
@@ -1188,23 +1223,287 @@ class MaintenanceViewTests(TestCase):
         profile.daily_report = True
         profile.save()
 
-        response = self.client.post(reverse('maintenance'),
-                                    {'action': 'status', 'username': 'member'})
-        # Без перехода по ссылке: вывод показывается один раз и стирается
-        self.assertRedirects(response, reverse('maintenance'), fetch_redirect_response=False)
-        output = self.client.get(reverse('maintenance')).context['output']
-        self.assertIn('member', output['text'])
-        self.assertNotIn('other', output['text'])
-        self.assertIn('--user member', output['command'])
-
-    def test_output_is_shown_once(self):
-        """Обновление страницы не запускает команду повторно."""
-        self.client.post(reverse('maintenance'), {'action': 'status'})
-        self.assertIsNotNone(self.client.get(reverse('maintenance')).context['output'])
-        self.assertIsNone(self.client.get(reverse('maintenance')).context['output'])
+        run = self.run_action('status', username='member')
+        self.assertIn('member', run.output)
+        self.assertNotIn('other', run.output)
+        self.assertIn('--user member', run.command)
 
     def test_unknown_action_is_rejected(self):
+        """С формы приходит ключ из закрытого списка, а не имя команды."""
         with patch('finance.management.commands.senddigest.send_to_chat') as send:
             response = self.client.post(reverse('maintenance'), {'action': 'rm -rf'}, follow=True)
             send.assert_not_called()
         self.assertContains(response, 'Неизвестное действие')
+        self.assertEqual(MaintenanceRun.objects.count(), 0)
+
+
+class BotEscapingTests(TestCase):
+    """Пользовательский текст не должен ломать HTML-разметку Telegram."""
+
+    def setUp(self):
+        self.user = User.objects.create_user('member', password='pass')
+        self.category = Category.objects.create(
+            user=self.user, name='Кафе <Три> & Ко', type=OperationType.EXPENSE,
+            monthly_limit=Decimal('100.00'),
+        )
+        Transaction.objects.create(user=self.user, type=OperationType.EXPENSE,
+                                   amount=Decimal('500.00'), category=self.category,
+                                   description='обед <b>вкусный</b>')
+
+    def assertEscaped(self, text):
+        """Угловых скобок из пользовательского текста в сообщении быть не должно."""
+        self.assertIn('&lt;', text)
+        self.assertNotIn('<Три>', text)
+        self.assertNotIn('<b>вкусный</b>', text)
+
+    def test_category_report_escapes_user_text(self):
+        self.assertEscaped(reports.category_report(self.user, 'Кафе <Три> & Ко'))
+
+    def test_period_report_escapes_category_name(self):
+        text = reports.period_report(self.user, periods.MONTH)
+        self.assertIn('Кафе &lt;Три&gt; &amp; Ко', text)
+
+    def test_daily_digest_escapes_category_name(self):
+        self.assertIn('&lt;Три&gt;', reports.daily_digest(self.user))
+
+    def test_limit_warning_escapes_category_name(self):
+        warnings = reports.limit_warnings(self.user)
+        self.assertTrue(warnings)
+        self.assertIn('&lt;Три&gt;', warnings[0][1])
+
+    def test_advice_report_escapes_category_name(self):
+        self.assertIn('&lt;Три&gt;', reports.advice_report(self.user, periods.MONTH))
+
+    def test_missing_category_message_escapes_query(self):
+        text = reports.category_report(self.user, '<script>')
+        self.assertIn('&lt;script&gt;', text)
+        self.assertNotIn('<script>', text)
+
+
+class BotAmountParsingTests(TestCase):
+    """Разбор суммы из чата: nan и бесконечность не должны ронять обработчик."""
+
+    def test_valid_amounts(self):
+        self.assertEqual(parse_amount('350.50')[0], Decimal('350.50'))
+        self.assertEqual(parse_amount('350,50')[0], Decimal('350.50'))
+        self.assertEqual(parse_amount('  1000 ')[0], Decimal('1000.00'))
+
+    def test_not_a_number_is_rejected(self):
+        for raw in ('абв', '', '12abc'):
+            amount, error = parse_amount(raw)
+            self.assertIsNone(amount, msg=raw)
+            self.assertIn('Не похоже на сумму', error)
+
+    def test_nan_and_infinity_are_rejected(self):
+        """Decimal принимает их молча, а сравнение с nan падает исключением."""
+        for raw in ('nan', 'NaN', 'Infinity', '-Infinity'):
+            amount, error = parse_amount(raw)
+            self.assertIsNone(amount, msg=raw)
+            self.assertIn('обычным числом', error)
+
+    def test_zero_and_negative_are_rejected(self):
+        for raw in ('0', '-5', '-0.01'):
+            self.assertIsNone(parse_amount(raw)[0], msg=raw)
+
+    def test_too_large_amount_is_rejected(self):
+        """Иначе ошибка вылезет в самом конце сценария, при сохранении."""
+        for raw in ('1e30', '99999999999999'):
+            amount, error = parse_amount(raw)
+            self.assertIsNone(amount, msg=raw)
+            self.assertIn('Слишком большая', error)
+
+    def test_extra_decimals_are_rounded(self):
+        """Модель хранит два знака: округляем сразу, а не падаем при сохранении."""
+        self.assertEqual(parse_amount('350.505')[0], Decimal('350.51'))
+        self.assertEqual(parse_amount('350.504')[0], Decimal('350.50'))
+
+    def test_rounded_amount_passes_model_validation(self):
+        user = User.objects.create_user('payer', password='pass')
+        category = user.categories.get(name='Еда')
+        amount, _ = parse_amount('350.505')
+        transaction = Transaction(user=user, type=OperationType.EXPENSE,
+                                  amount=amount, category=category)
+        transaction.full_clean()
+
+
+class BotDateParsingTests(TestCase):
+    """Дата операции задаётся из чата — в ТЗ это обязательное поле."""
+
+    def test_full_and_short_formats(self):
+        self.assertEqual(parse_date('25.12.2026'), date(2026, 12, 25))
+        self.assertEqual(parse_date('25.12.26'), date(2026, 12, 25))
+
+    def test_date_without_year_never_lands_in_the_future(self):
+        """«25.12» в августе — прошлый декабрь: будущих операций не бывает."""
+        today = timezone.localdate()
+
+        passed = today - timedelta(days=5)
+        self.assertEqual(parse_date(f'{passed:%d.%m}'), passed)
+
+        upcoming = today + timedelta(days=5)
+        self.assertEqual(parse_date(f'{upcoming:%d.%m}'),
+                         upcoming.replace(year=upcoming.year - 1))
+
+        self.assertEqual(parse_date(f'{today:%d.%m}'), today)
+
+    def test_words_are_understood(self):
+        """Рядом с кнопкой «Вчера» логично написать то же самое словом."""
+        today = timezone.localdate()
+        self.assertEqual(parse_date('сегодня'), today)
+        self.assertEqual(parse_date('вчера'), today - timedelta(days=1))
+        self.assertEqual(parse_date('Позавчера'), today - timedelta(days=2))
+
+    def test_garbage_is_rejected(self):
+        for raw in ('на прошлой неделе', '32.13.2026', '2026-12-25', ''):
+            self.assertIsNone(parse_date(raw), msg=raw)
+
+    def test_operation_can_be_saved_with_past_date(self):
+        user = User.objects.create_user('payer', password='pass')
+        category = user.categories.get(name='Еда')
+        yesterday = timezone.localdate() - timedelta(days=1)
+
+        transaction = async_to_sync(services.create_operation)(
+            user, category, '100.00', 'вчерашний обед', yesterday,
+        )
+        self.assertEqual(transaction.date, yesterday)
+
+
+class BotStorageTests(TestCase):
+    """Диалог с ботом живёт в базе, а не в памяти процесса."""
+
+    def setUp(self):
+        self.storage = DjangoStorage()
+        self.key = StorageKey(bot_id=1, chat_id=100, user_id=100)
+
+    def test_state_and_data_survive_restart(self):
+        """Перезапуск бота не должен ронять начатый сценарий."""
+        async_to_sync(self.storage.set_state)(self.key, 'AddOperation:amount')
+        async_to_sync(self.storage.set_data)(self.key, {'amount': '350.50'})
+
+        # Новый экземпляр хранилища — как будто процесс перезапустили
+        fresh = DjangoStorage()
+        self.assertEqual(async_to_sync(fresh.get_state)(self.key), 'AddOperation:amount')
+        self.assertEqual(async_to_sync(fresh.get_data)(self.key), {'amount': '350.50'})
+
+    def test_clearing_state_removes_the_row(self):
+        async_to_sync(self.storage.set_state)(self.key, 'AddOperation:amount')
+        async_to_sync(self.storage.set_state)(self.key, None)
+
+        self.assertIsNone(async_to_sync(self.storage.get_state)(self.key))
+        self.assertEqual(BotDialog.objects.count(), 0)
+
+    def test_dialogs_of_different_chats_do_not_mix(self):
+        other = StorageKey(bot_id=1, chat_id=200, user_id=200)
+        async_to_sync(self.storage.set_data)(self.key, {'amount': '100'})
+        async_to_sync(self.storage.set_data)(other, {'amount': '999'})
+
+        self.assertEqual(async_to_sync(self.storage.get_data)(self.key), {'amount': '100'})
+        self.assertEqual(async_to_sync(self.storage.get_data)(other), {'amount': '999'})
+
+    def test_empty_dialog_returns_empty_data(self):
+        self.assertEqual(async_to_sync(self.storage.get_data)(self.key), {})
+        self.assertIsNone(async_to_sync(self.storage.get_state)(self.key))
+
+
+class DayOnlyDateTests(TestCase):
+    """Одно число — день текущего или прошлого месяца."""
+
+    def test_passed_day_belongs_to_this_month(self):
+        today = timezone.localdate()
+        if today.day > 1:
+            passed = today.replace(day=today.day - 1)
+            self.assertEqual(parse_date(str(passed.day)), passed)
+
+    def test_today_is_accepted(self):
+        today = timezone.localdate()
+        self.assertEqual(parse_date(str(today.day)), today)
+
+    def test_upcoming_day_belongs_to_previous_month(self):
+        """«23» двадцать второго числа — это прошлый месяц, а не завтра."""
+        self.assertEqual(recent_date(23, today=date(2026, 8, 22)), date(2026, 7, 23))
+        self.assertEqual(recent_date(31, today=date(2026, 8, 22)), date(2026, 7, 31))
+
+    def test_missing_day_steps_further_back(self):
+        """В феврале нет тридцать первого — берётся ближайший месяц, где оно есть."""
+        self.assertEqual(recent_date(31, today=date(2026, 3, 15)), date(2026, 1, 31))
+        self.assertEqual(recent_date(29, today=date(2026, 3, 15)), date(2026, 1, 29))
+        # В високосном году двадцать девятое февраля существует
+        self.assertEqual(recent_date(29, today=date(2024, 3, 15)), date(2024, 2, 29))
+
+    def test_year_rolls_over_in_january(self):
+        self.assertEqual(recent_date(20, today=date(2026, 1, 10)), date(2025, 12, 20))
+
+    def test_month_without_year_keeps_the_month(self):
+        """Если месяц назван, назад двигается только год."""
+        self.assertEqual(recent_date(25, month=12, today=date(2026, 8, 22)), date(2025, 12, 25))
+        self.assertEqual(recent_date(2, month=8, today=date(2026, 8, 22)), date(2026, 8, 2))
+
+    def test_impossible_numbers_are_rejected(self):
+        for raw in ('0', '32', '99'):
+            self.assertIsNone(parse_date(raw), msg=raw)
+
+
+class FutureDateTests(TestCase):
+    """Операций из будущего не бывает: учёт ведётся по факту."""
+
+    def setUp(self):
+        self.user = User.objects.create_user('member', password='pass')
+        self.client.force_login(self.user)
+        self.food = self.user.categories.get(name='Еда')
+        self.tomorrow = timezone.localdate() + timedelta(days=1)
+
+    def test_model_rejects_future_date(self):
+        transaction = Transaction(user=self.user, type=OperationType.EXPENSE,
+                                  amount=Decimal('100.00'), category=self.food,
+                                  date=self.tomorrow)
+        with self.assertRaises(ValidationError) as error:
+            transaction.full_clean()
+        self.assertIn('date', error.exception.message_dict)
+
+    def test_web_form_rejects_future_date(self):
+        response = self.client.post(reverse('transaction_add'), {
+            'type': OperationType.EXPENSE,
+            'amount': '100.00',
+            'date': self.tomorrow.isoformat(),
+            'category': self.food.pk,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('date', response.context['form'].errors)
+        self.assertEqual(self.user.transactions.count(), 0)
+
+    def test_form_limits_the_calendar(self):
+        """Браузер не должен предлагать то, что всё равно не пройдёт."""
+        response = self.client.get(reverse('transaction_add'))
+        widget = response.context['form'].fields['date'].widget
+        self.assertEqual(widget.attrs['max'], timezone.localdate().isoformat())
+
+    def test_today_is_still_allowed(self):
+        response = self.client.post(reverse('transaction_add'), {
+            'type': OperationType.EXPENSE,
+            'amount': '100.00',
+            'date': timezone.localdate().isoformat(),
+            'category': self.food.pk,
+        })
+        self.assertRedirects(response, reverse('transaction_list'))
+
+    def test_bot_service_rejects_future_date(self):
+        with self.assertRaises(ValidationError):
+            async_to_sync(services.create_operation)(
+                self.user, self.food, '100.00', '', self.tomorrow,
+            )
+
+
+class DescriptionKeyboardTests(TestCase):
+    """На последнем шаге должна быть возможность вернуться к дате."""
+
+    def texts(self, keyboard):
+        return [[button.text for button in row] for row in keyboard.inline_keyboard]
+
+    def test_back_to_date_button_is_present(self):
+        rows = self.texts(description_keyboard())
+        self.assertEqual(rows, [['Изменить дату'], ['Отмена']])
+
+    def test_button_leads_to_the_date_step(self):
+        buttons = [b for row in description_keyboard().inline_keyboard for b in row]
+        back = next(b for b in buttons if b.text == 'Изменить дату')
+        self.assertEqual(back.callback_data, 'add:back:date')

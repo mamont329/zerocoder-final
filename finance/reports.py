@@ -2,8 +2,13 @@
 
 Считают то же самое, что и веб-аналитика: те же функции из analytics,
 только на выходе не графики, а строки. Формат — HTML разметка Telegram.
+
+Всё, что пришло от пользователя — названия категорий, описания операций —
+проходит через esc(). Без этого категория с угловой скобкой ломает разбор
+разметки, и Telegram отказывается доставлять сообщение целиком.
 """
 from decimal import Decimal
+from html import escape
 
 from django.utils import timezone
 
@@ -13,6 +18,11 @@ from .models import OperationType
 
 # Сколько категорий показывать в сводке, чтобы сообщение оставалось читаемым
 TOP_CATEGORIES = 5
+
+
+def esc(value):
+    """Экранирует пользовательский текст для HTML-разметки Telegram."""
+    return escape(str(value), quote=False)
 
 # С какой доли израсходованного лимита предупреждать заранее
 NEAR_LIMIT_SHARE = Decimal('0.8')
@@ -49,7 +59,7 @@ def period_report(user, period):
     if categories:
         lines += ['', '<b>Куда ушли деньги</b>']
         for row in categories[:TOP_CATEGORIES]:
-            lines.append(f'· {row["name"]} — {money(row["total"])} ₽ ({row["percent"]:.0f}%)')
+            lines.append(f'· {esc(row["name"])} — {money(row["total"])} ₽ ({row["percent"]:.0f}%)')
         if len(categories) > TOP_CATEGORIES:
             other = sum(row['total'] for row in categories[TOP_CATEGORIES:])
             lines.append(f'· Прочее — {money(other)} ₽')
@@ -67,8 +77,8 @@ def advice_report(user, period):
     marks = {'danger': '‼️', 'warning': '⚠️', 'success': '✅', 'info': 'ℹ️'}
     lines = ['<b>Советы</b>', '']
     for item in items:
-        lines.append(f'{marks.get(item.level, "•")} <b>{item.title}</b>')
-        lines.append(item.text)
+        lines.append(f'{marks.get(item.level, "•")} <b>{esc(item.title)}</b>')
+        lines.append(esc(item.text))
         lines.append('')
     return '\n'.join(lines).strip()
 
@@ -87,8 +97,8 @@ def category_report(user, name, period=periods.MONTH):
     """Траты по конкретной категории. Название ищется без учёта регистра."""
     category = find_category(user, name)
     if category is None:
-        available = ', '.join(user.categories.values_list('name', flat=True))
-        return f'Категория «{name}» не найдена.\n\nВаши категории: {available}'
+        available = ', '.join(esc(item) for item in user.categories.values_list('name', flat=True))
+        return f'Категория «{esc(name)}» не найдена.\n\nВаши категории: {available}'
 
     queryset, start, end = _period_queryset(user, period)
     queryset = queryset.filter(category=category)
@@ -96,7 +106,7 @@ def category_report(user, name, period=periods.MONTH):
     amount = total['income'] if category.type == OperationType.INCOME else total['expense']
 
     lines = [
-        f'<b>{category.name}</b> · {periods.period_label(period, start, end)}',
+        f'<b>{esc(category.name)}</b> · {periods.period_label(period, start, end)}',
         '',
         f'Всего: <b>{money(amount)} ₽</b> за {queryset.count()} операц.',
     ]
@@ -116,7 +126,7 @@ def category_report(user, name, period=periods.MONTH):
     if recent:
         lines += ['', '<b>Последние операции</b>']
         for item in recent:
-            note = f' — {item.description}' if item.description else ''
+            note = f' — {esc(item.description)}' if item.description else ''
             lines.append(f'· {item.date:%d.%m}: {money(item.amount)} ₽{note}')
 
     return '\n'.join(lines)
@@ -202,7 +212,7 @@ def daily_digest(user):
     if categories:
         lines.append('')
         for row in categories[:3]:
-            lines.append(f'· {row["name"]} — {money(row["total"])} ₽')
+            lines.append(f'· {esc(row["name"])} — {money(row["total"])} ₽')
 
     return '\n'.join(lines)
 
@@ -223,13 +233,13 @@ def limit_warnings(user, today=None):
         if usage['over']:
             warnings.append((
                 f'limit:{category.pk}:{month}',
-                f'‼️ <b>Лимит превышен: {category.name}</b>\n'
+                f'‼️ <b>Лимит превышен: {esc(category.name)}</b>\n'
                 f'Потрачено {money(usage["spent"])} ₽ при лимите {money(usage["limit"])} ₽.',
             ))
         elif usage['share'] >= NEAR_LIMIT_SHARE:
             warnings.append((
                 f'near:{category.pk}:{month}',
-                f'⚠️ <b>Лимит почти исчерпан: {category.name}</b>\n'
+                f'⚠️ <b>Лимит почти исчерпан: {esc(category.name)}</b>\n'
                 f'Израсходовано {usage["percent"]:.0f}%, осталось '
                 f'{money(usage["limit"] - usage["spent"])} ₽.',
             ))

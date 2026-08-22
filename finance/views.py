@@ -1,4 +1,5 @@
 import os
+import threading
 from decimal import Decimal
 from io import StringIO
 
@@ -9,7 +10,10 @@ from django.contrib.auth.views import PasswordChangeView
 from django.core.management import call_command
 from django.contrib.auth.models import User
 from django.db.models import Count, Max, Min, ProtectedError, Sum
+from django.db import connection
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 from django.urls import reverse_lazy
 from django.views import View
 from django.views.generic import CreateView, DeleteView, ListView, TemplateView, UpdateView
@@ -18,8 +22,8 @@ from . import accounts, analytics, charts, periods
 from .analytics import totals
 from .forms import (AccountForm, CategoryForm, ProfileForm, SavedReportForm, SignUpForm,
                     SitePasswordChangeForm, TransactionFilterForm, TransactionForm, UserCreateForm)
-from .models import (Category, NotificationLog, OperationType, SavedReport, Transaction,
-                     purge_user)
+from .models import (Category, MaintenanceRun, NotificationLog, OperationType, SavedReport,
+                     Transaction, purge_user)
 
 ZERO = Decimal('0.00')
 
@@ -623,7 +627,8 @@ class MaintenanceView(StaffRequiredMixin, TemplateView):
 
     template_name = 'finance/maintenance.html'
 
-    # Что можно запустить и с какими аргументами
+    # Что можно запустить и с какими аргументами. Список закрытый:
+    # с формы приходит только ключ, а не имя команды
     ACTIONS = {
         'status': ('Состояние рассылки', {'status': True}),
         'dry_run': ('Показать текст без отправки', {'dry_run': True}),
@@ -639,14 +644,17 @@ class MaintenanceView(StaffRequiredMixin, TemplateView):
             profile__telegram_id__isnull=False,
         ).select_related('profile')
         context['candidates'] = User.objects.filter(is_active=True).order_by('username')
-        context['notifications'] = (
-            NotificationLog.objects.select_related('user')[:20]
-        )
+        context['notifications'] = NotificationLog.objects.select_related('user')[:20]
         context['actions'] = self.ACTIONS
-        # Вывод предыдущего запуска: кладём его в сессию, чтобы обновление
-        # страницы не запускало команду заново
-        context['output'] = self.request.session.pop('command_output', None)
+        context['run'] = self.get_run()
         return context
+
+    def get_run(self):
+        """Запуск, за которым сейчас наблюдаем."""
+        run_id = self.request.GET.get('run')
+        if not run_id:
+            return None
+        return MaintenanceRun.objects.filter(pk=run_id).first()
 
     def post(self, request, *args, **kwargs):
         action = request.POST.get('action')
@@ -659,20 +667,18 @@ class MaintenanceView(StaffRequiredMixin, TemplateView):
         if username:
             options = {**options, 'user': username}
 
-        buffer = StringIO()
-        try:
-            call_command('senddigest', stdout=buffer, stderr=buffer, **options)
-            text = buffer.getvalue().strip() or 'Команда отработала без вывода.'
-        except Exception as error:
-            # Ошибку показываем на странице: лезть в консоль сервера ради неё не нужно
-            text = f'Ошибка: {error}'
+        run = MaintenanceRun.objects.create(
+            started_by=request.user,
+            title=title,
+            command=self.as_command_line(action, username),
+        )
+        # Отправка ждёт ответа Telegram, а запрос ждать не должен: команда
+        # уходит в отдельный поток, страница потом читает результат из базы
+        thread = threading.Thread(target=run_command_in_background,
+                                  args=(run.pk, options), daemon=True)
+        thread.start()
 
-        request.session['command_output'] = {
-            'title': title,
-            'command': self.as_command_line(action, username),
-            'text': text,
-        }
-        return redirect('maintenance')
+        return redirect(f"{reverse_lazy('maintenance')}?run={run.pk}")
 
     @staticmethod
     def as_command_line(action, username):
@@ -680,3 +686,41 @@ class MaintenanceView(StaffRequiredMixin, TemplateView):
         flags = {'status': ' --status', 'dry_run': ' --dry-run', 'force': ' --force', 'send': ''}
         user_flag = f' --user {username}' if username else ''
         return f'python manage.py senddigest{flags[action]}{user_flag}'
+
+
+class MaintenanceRunStatusView(StaffRequiredMixin, View):
+    """Состояние запуска для страницы: она опрашивает его, пока команда идёт."""
+
+    def get(self, request, pk, *args, **kwargs):
+        run = get_object_or_404(MaintenanceRun, pk=pk)
+        return JsonResponse({
+            'status': run.status,
+            'running': run.is_running,
+            'title': run.title,
+            'command': run.command,
+            'output': run.output,
+        })
+
+
+def run_command_in_background(run_id, options):
+    """Выполняет команду рассылки и складывает вывод в запись запуска."""
+    buffer = StringIO()
+    try:
+        call_command('senddigest', stdout=buffer, stderr=buffer, **options)
+        status = MaintenanceRun.Status.DONE
+        output = buffer.getvalue().strip() or 'Команда отработала без вывода.'
+    except Exception as error:
+        status = MaintenanceRun.Status.FAILED
+        output = f'Ошибка: {error}'
+
+    try:
+        MaintenanceRun.objects.filter(pk=run_id).update(
+            status=status, output=output, finished_at=timezone.now(),
+        )
+    finally:
+        # Django открывает отдельное соединение на каждый поток, и закрыть его
+        # должен сам поток — иначе они копятся с каждым запуском. В основном
+        # потоке соединением распоряжается сам Django, трогать его нельзя:
+        # у SQLite в памяти закрытие попросту уничтожает базу.
+        if threading.current_thread() is not threading.main_thread():
+            connection.close()

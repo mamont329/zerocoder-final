@@ -2,6 +2,7 @@ from django import forms
 from django.utils.safestring import mark_safe
 from django.contrib.auth.forms import PasswordChangeForm, UserCreationForm
 from django.contrib.auth.models import User
+from django.utils import timezone
 
 from . import periods
 from .models import Category, OperationType, Profile, SavedReport, Transaction
@@ -51,6 +52,9 @@ class UserOwnedFormMixin:
 
 
 class TransactionForm(UserOwnedFormMixin, forms.ModelForm):
+    """Форма операции. Дату дальше сегодняшней выбрать нельзя — учёт ведётся
+    по случившемуся, а не по планам."""
+
     class Meta:
         model = Transaction
         fields = ('type', 'amount', 'date', 'category', 'description')
@@ -66,6 +70,9 @@ class TransactionForm(UserOwnedFormMixin, forms.ModelForm):
         super().__init__(*args, **kwargs)
         if self.user is not None:
             self.fields['category'].queryset = self.user.categories.all()
+        # Ограничение на уровне поля: календарь браузера не даст выбрать
+        # будущий день, а проверку всё равно продублирует модель
+        self.fields['date'].widget.attrs['max'] = timezone.localdate().isoformat()
 
 
 class CategoryForm(UserOwnedFormMixin, forms.ModelForm):

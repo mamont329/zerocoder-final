@@ -2,6 +2,36 @@
 
 {% block title %}Обслуживание — FinControl{% endblock %}
 
+{% block scripts %}
+<script>
+  // Команда идёт в отдельном потоке: страница отдаётся сразу, а результат
+  // подтягивается опросом — иначе запрос ждал бы ответа Telegram
+  (function () {
+    const card = document.getElementById('run');
+    if (!card || card.dataset.running !== '1') return;
+
+    const output = document.getElementById('run-output');
+    const badge = document.getElementById('run-status');
+
+    const poll = async () => {
+      const response = await fetch(card.dataset.runUrl);
+      const run = await response.json();
+
+      if (run.running) {
+        setTimeout(poll, 1000);
+        return;
+      }
+
+      output.textContent = run.output;
+      badge.textContent = run.status === 'failed' ? 'Ошибка' : 'Завершено';
+      badge.className = 'badge ms-2 ' + (run.status === 'failed' ? 'text-bg-danger' : 'text-bg-success');
+    };
+
+    setTimeout(poll, 700);
+  })();
+</script>
+{% endblock %}
+
 {% block content %}
 <div class="mb-3">
   <h1 class="h3 mb-0">Обслуживание</h1>
@@ -81,15 +111,21 @@
   </div>
 </div>
 
-{% if output %}
-  <div class="card mb-3">
+{% if run %}
+  <div class="card mb-3" id="run" data-run-url="{% url 'maintenance_run' run.pk %}"
+       data-running="{{ run.is_running|yesno:'1,0' }}">
     <div class="card-body">
       <div class="d-flex justify-content-between align-items-baseline mb-2">
-        <h2 class="h5 mb-0">{{ output.title }}</h2>
+        <h2 class="h5 mb-0">
+          {{ run.title }}
+          <span id="run-status" class="badge {% if run.is_running %}text-bg-secondary{% elif run.status == 'failed' %}text-bg-danger{% else %}text-bg-success{% endif %} ms-2">
+            {{ run.get_status_display }}
+          </span>
+        </h2>
         <code class="small text-muted" data-bs-toggle="tooltip"
-              title="Та же команда для консоли или планировщика задач">{{ output.command }}</code>
+              title="Та же команда для консоли или планировщика задач">{{ run.command }}</code>
       </div>
-      <pre class="bg-light border rounded p-3 mb-0" style="white-space: pre-wrap">{{ output.text }}</pre>
+      <pre id="run-output" class="bg-light border rounded p-3 mb-0" style="white-space: pre-wrap">{% if run.is_running %}Команда выполняется…{% else %}{{ run.output }}{% endif %}</pre>
     </div>
   </div>
 {% endif %}

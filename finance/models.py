@@ -113,6 +113,11 @@ class Transaction(models.Model):
         return f'{sign}{self.amount} · {self.category} · {self.date}'
 
     def clean(self):
+        # Операций из будущего не бывает: сервис ведёт учёт случившегося,
+        # а планирование бюджета в задачу MVP не входит
+        if self.date and self.date > timezone.localdate():
+            raise ValidationError({'date': 'Дата не может быть в будущем.'})
+
         if self.category_id is None:
             return
         # Чужую категорию к своей операции подставить нельзя
@@ -294,6 +299,66 @@ class SavedReport(models.Model):
         if self.category_id:
             params['category'] = str(self.category_id)
         return urlencode(params)
+
+
+class BotDialog(models.Model):
+    """Незавершённый диалог с ботом: шаг сценария и накопленные данные.
+
+    Живёт в базе, а не в памяти процесса: иначе перезапуск бота бросает
+    пользователя посреди добавления операции.
+    """
+
+    key = models.CharField('Ключ диалога', max_length=200, unique=True)
+    state = models.CharField('Шаг сценария', max_length=100, blank=True)
+    data = models.JSONField('Данные шага', default=dict, blank=True)
+    updated_at = models.DateTimeField('Обновлён', auto_now=True)
+
+    class Meta:
+        verbose_name = 'диалог бота'
+        verbose_name_plural = 'диалоги бота'
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return f'{self.key} · {self.state or "без шага"}'
+
+
+class MaintenanceRun(models.Model):
+    """Запуск рассылки из раздела «Обслуживание».
+
+    Команда выполняется в отдельном потоке, а страница читает результат
+    отсюда — иначе запрос ждал бы ответа Telegram, занимая обработчик.
+    """
+
+    class Status(models.TextChoices):
+        RUNNING = 'running', 'Выполняется'
+        DONE = 'done', 'Завершено'
+        FAILED = 'failed', 'Ошибка'
+
+    started_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='maintenance_runs',
+        verbose_name='Кто запустил',
+    )
+    title = models.CharField('Действие', max_length=100)
+    command = models.CharField('Команда', max_length=200)
+    status = models.CharField('Состояние', max_length=20,
+                              choices=Status.choices, default=Status.RUNNING)
+    output = models.TextField('Вывод', blank=True)
+    started_at = models.DateTimeField('Начат', auto_now_add=True)
+    finished_at = models.DateTimeField('Завершён', null=True, blank=True)
+
+    class Meta:
+        verbose_name = 'запуск обслуживания'
+        verbose_name_plural = 'запуски обслуживания'
+        ordering = ['-started_at']
+
+    def __str__(self):
+        return f'{self.title} · {self.get_status_display()}'
+
+    @property
+    def is_running(self):
+        return self.status == self.Status.RUNNING
 
 
 def purge_user(user):

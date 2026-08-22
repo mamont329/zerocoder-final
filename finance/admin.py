@@ -2,7 +2,8 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
 
-from .models import Category, NotificationLog, Profile, SavedReport, Transaction, purge_user
+from .models import (BotDialog, Category, MaintenanceRun, NotificationLog, Profile,
+                     SavedReport, Transaction, purge_user)
 
 
 @admin.register(Category)
@@ -39,6 +40,19 @@ class SavedReportAdmin(admin.ModelAdmin):
     list_display = ('name', 'user', 'period', 'type', 'category')
     list_filter = ('period', 'type')
     search_fields = ('name',)
+
+
+@admin.register(BotDialog)
+class BotDialogAdmin(admin.ModelAdmin):
+    list_display = ('key', 'state', 'updated_at')
+    readonly_fields = ('updated_at',)
+
+
+@admin.register(MaintenanceRun)
+class MaintenanceRunAdmin(admin.ModelAdmin):
+    list_display = ('started_at', 'title', 'status', 'started_by')
+    list_filter = ('status',)
+    readonly_fields = ('started_at', 'finished_at')
 
 
 class UserWithDataAdmin(UserAdmin):

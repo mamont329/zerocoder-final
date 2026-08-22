@@ -20,6 +20,7 @@ urlpatterns = [
     path('profile/deactivate/', views.AccountDeactivateView.as_view(), name='account_deactivate'),
 
     path('maintenance/', views.MaintenanceView.as_view(), name='maintenance'),
+    path('maintenance/runs/<int:pk>/', views.MaintenanceRunStatusView.as_view(), name='maintenance_run'),
 
     path('users/', views.UserListView.as_view(), name='user_list'),
     path('users/add/', views.UserCreateView.as_view(), name='user_add'),
